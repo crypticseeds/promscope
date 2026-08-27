@@ -1,0 +1,38 @@
+# M1 exit checklist - run each request with the GoLand HTTP client (green gutter arrow).
+#
+# Run A: start promscope with defaults        -> go run ./cmd/promscope
+# Run B: start with the A/B toggle            -> go run ./cmd/promscope -stateless=false
+#
+# Expected results:
+#   Request              | Run A (stateless)                  | Run B (stateful)
+#   ---------------------|------------------------------------|----------------------------------
+#   1 initialize         | 200, NO Mcp-Session-Id header      | 200, Mcp-Session-Id header PRESENT
+#   2 ping (no session)  | 200 - every POST self-contained    | 200 - but a NEW session is created
+#                        |                                    | per request (H3 memory mechanism)
+#   3 ping (bogus id)    | 200 - header IGNORED entirely      | 404 "session not found"
+#                        |                                    | (H1 round-robin failure mode)
+#
+# Responses arrive SSE-framed (Content-Type: text/event-stream, "event: message"
+# lines) - that is the streamable HTTP transport's default framing, not an error.
+
+### 1. initialize
+POST http://localhost:8090/mcp
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "goland-http-client", "version": "0"}}}
+
+### 2. ping on a fresh connection, no prior initialize, no session id
+POST http://localhost:8090/mcp
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{"jsonrpc": "2.0", "id": 2, "method": "ping"}
+
+### 3. ping carrying an unknown session id (simulates round-robin to the wrong replica)
+POST http://localhost:8090/mcp
+Content-Type: application/json
+Accept: application/json, text/event-stream
+Mcp-Session-Id: FROMANOTHERREPLICA00000000
+
+{"jsonrpc": "2.0", "id": 3, "method": "ping"}

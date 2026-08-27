@@ -1,0 +1,51 @@
+# M2 tool requests - needs a running Prometheus and promscope:
+#   docker run -d --rm --name prom -p 9090:9090 prom/prometheus
+#   go run ./cmd/promscope
+#
+# Prometheus scrapes itself out of the box, so prometheus_* and go_* metrics
+# exist within seconds of starting - real data, no exporters needed yet.
+
+### 1. tools/list - the tool catalog: check name, description, annotations,
+### input schema (filter) and output schema (metrics/total/truncated/hint)
+POST http://localhost:8090/mcp
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{"jsonrpc": "2.0", "id": 10, "method": "tools/list"}
+
+### 2. list_metrics, no filter - expect a few hundred names, enriched
+POST http://localhost:8090/mcp
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{"jsonrpc": "2.0", "id": 11, "method": "tools/call", "params": {"name": "list_metrics", "arguments": {}}}
+
+### 3. list_metrics with filter - only go_* runtime metrics
+POST http://localhost:8090/mcp
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{"jsonrpc": "2.0", "id": 12, "method": "tools/call", "params": {"name": "list_metrics", "arguments": {"filter": "go_gc"}}}
+
+### 4. filter with no matches - expect total 0 and a "broader filter" hint
+POST http://localhost:8090/mcp
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{"jsonrpc": "2.0", "id": 13, "method": "tools/call", "params": {"name": "list_metrics", "arguments": {"filter": "vllm"}}}
+
+### 5. invalid input - filter must be a string; the SDK's schema validation
+### rejects this before our handler ever runs
+POST http://localhost:8090/mcp
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{"jsonrpc": "2.0", "id": 14, "method": "tools/call", "params": {"name": "list_metrics", "arguments": {"filter": 42}}}
+
+### 6. Prometheus down (docker stop prom, then run this) - expect isError:true
+### with an actionable message, NOT a protocol error
+POST http://localhost:8090/mcp
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{"jsonrpc": "2.0", "id": 15, "method": "tools/call", "params": {"name": "list_metrics", "arguments": {}}}

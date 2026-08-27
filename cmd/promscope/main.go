@@ -16,6 +16,9 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/crypticseeds/promscope/internal/promclient"
+	"github.com/crypticseeds/promscope/internal/tools"
 )
 
 const version = "0.1.0"
@@ -79,6 +82,16 @@ func main() {
 		Title:   "promscope - Prometheus over MCP",
 		Version: version,
 	}, nil)
+
+	// The Prometheus client is constructed once and shared by every request:
+	// it is stateless (an http.Client and a base URL), so replicas stay
+	// interchangeable. Construction only fails on an unparseable URL.
+	promClient, err := promclient.New(cfg.prometheusURL)
+	if err != nil {
+		logger.Error("invalid -prometheus-url", "url", cfg.prometheusURL, "error", err)
+		os.Exit(2)
+	}
+	tools.Register(server, promClient)
 
 	// The getServer callback exists so multi-tenant deployments can choose a
 	// server per request; we always return the same one. Stateless mode gives

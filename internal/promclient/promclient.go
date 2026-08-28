@@ -13,12 +13,25 @@ import (
 
 	"github.com/prometheus/client_golang/api"
 	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"github.com/prometheus/common/model"
 )
 
 // Meta is the metadata Prometheus holds for one metric name.
 type Meta struct {
 	Type string // counter | gauge | histogram | summary | unknown
 	Help string
+}
+
+// Alert is one active alert. Firing means the condition has held for the
+// rule's full "for" duration; pending means it is true but still waiting it
+// out. Inactive alerts are not returned by Prometheus at all.
+type Alert struct {
+	Name        string            // the alertname label
+	State       string            // firing | pending
+	Labels      map[string]string // includes alertname
+	Annotations map[string]string
+	ActiveAt    time.Time
+	Value       string // the alert expression's value when last evaluated
 }
 
 // Client is the slice of Prometheus that promscope's tools consume.
@@ -31,6 +44,10 @@ type Client interface {
 	// holds metadata for actively-scraped series, so callers must tolerate
 	// names that have no entry here.
 	Metadata(ctx context.Context) (map[string]Meta, error)
+
+	// Alerts returns all active (firing or pending) alerts, sorted firing
+	// first, then by name.
+	Alerts(ctx context.Context) ([]Alert, error)
 }
 
 // HTTP is the real Client, backed by the official client_golang v1 API.
@@ -83,4 +100,39 @@ func (h *HTTP) Metadata(ctx context.Context) (map[string]Meta, error) {
 		out[name] = Meta{Type: string(entries[0].Type), Help: entries[0].Help}
 	}
 	return out, nil
+}
+
+func (h *HTTP) Alerts(ctx context.Context) ([]Alert, error) {
+	res, err := h.api.Alerts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("promclient: alerts: %w", err)
+	}
+	out := make([]Alert, len(res.Alerts))
+	for i, a := range res.Alerts {
+		out[i] = Alert{
+			Name:        string(a.Labels["alertname"]),
+			State:       string(a.State),
+			Labels:      labelSetToMap(a.Labels),
+			Annotations: labelSetToMap(a.Annotations),
+			ActiveAt:    a.ActiveAt,
+			Value:       a.Value,
+		}
+	}
+	// Deterministic order: firing before pending, then by name. Stable
+	// output keeps tests simple and agent prompt caches warm.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].State != out[j].State {
+			return out[i].State == "firing"
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out, nil
+}
+
+func labelSetToMap(ls model.LabelSet) map[string]string {
+	m := make(map[string]string, len(ls))
+	for k, v := range ls {
+		m[string(k)] = string(v)
+	}
+	return m
 }

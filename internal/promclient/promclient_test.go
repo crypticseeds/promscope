@@ -114,6 +114,37 @@ func TestMetadata(t *testing.T) {
 	}
 }
 
+func TestAlerts(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/alerts" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// Pending listed before firing to prove we re-sort.
+		w.Write([]byte(`{"status":"success","data":{"alerts":[
+			{"labels":{"alertname":"ZDiskFilling","severity":"warn"},"annotations":{},"state":"pending","activeAt":"2026-08-27T22:30:00Z","value":"0.86"},
+			{"labels":{"alertname":"HighTTFT","severity":"page"},"annotations":{"summary":"p99 TTFT above SLO"},"state":"firing","activeAt":"2026-08-27T22:00:00Z","value":"0.31"}
+		]}}`))
+	})
+
+	got, err := c.Alerts(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d alerts, want 2", len(got))
+	}
+	if got[0].Name != "HighTTFT" || got[0].State != "firing" {
+		t.Errorf("firing alert should sort first, got %+v", got[0])
+	}
+	if got[0].Annotations["summary"] != "p99 TTFT above SLO" {
+		t.Errorf("annotations not converted: %+v", got[0].Annotations)
+	}
+	if got[1].Labels["severity"] != "warn" {
+		t.Errorf("labels not converted: %+v", got[1].Labels)
+	}
+}
+
 func TestContextCancellationPropagates(t *testing.T) {
 	// The handler stalls longer than the caller's budget. If context
 	// propagation works, the client gives up at ~50ms with an error;

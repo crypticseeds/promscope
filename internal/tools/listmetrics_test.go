@@ -12,10 +12,12 @@ import (
 // fakeClient satisfies promclient.Client with canned data - the payoff of
 // tools depending on the interface: no HTTP, no mocks framework, 10 lines.
 type fakeClient struct {
-	names    []string
-	namesErr error
-	meta     map[string]promclient.Meta
-	metaErr  error
+	names     []string
+	namesErr  error
+	meta      map[string]promclient.Meta
+	metaErr   error
+	alerts    []promclient.Alert
+	alertsErr error
 }
 
 func (f *fakeClient) MetricNames(context.Context) ([]string, error) {
@@ -24,6 +26,10 @@ func (f *fakeClient) MetricNames(context.Context) ([]string, error) {
 
 func (f *fakeClient) Metadata(context.Context) (map[string]promclient.Meta, error) {
 	return f.meta, f.metaErr
+}
+
+func (f *fakeClient) Alerts(context.Context) ([]promclient.Alert, error) {
+	return f.alerts, f.alertsErr
 }
 
 func TestListMetrics(t *testing.T) {

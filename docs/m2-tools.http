@@ -49,3 +49,19 @@ Content-Type: application/json
 Accept: application/json, text/event-stream
 
 {"jsonrpc": "2.0", "id": 15, "method": "tools/call", "params": {"name": "list_metrics", "arguments": {}}}
+
+### 7. get_alerts - vanilla Prometheus has no alert rules, so expect
+### total 0 with the "no alert rules configured" hint (the always-firing
+### demo rule arrives with the M4 compose stack)
+POST http://localhost:8090/mcp
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{"jsonrpc": "2.0", "id": 16, "method": "tools/call", "params": {"name": "get_alerts", "arguments": {}}}
+
+### 8. get_alerts with an invalid state - expect isError naming valid values
+POST http://localhost:8090/mcp
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{"jsonrpc": "2.0", "id": 17, "method": "tools/call", "params": {"name": "get_alerts", "arguments": {"state": "resolved"}}}

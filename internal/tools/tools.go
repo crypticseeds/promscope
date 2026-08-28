@@ -32,4 +32,15 @@ func Register(server *mcp.Server, prom promclient.Client) {
 			IdempotentHint: true,
 		},
 	}, ts.listMetrics)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "get_alerts",
+		Description: "List active Prometheus alerts (firing and pending). " +
+			"Returns each alert's labels, annotations, active-since time and last value. " +
+			"Optionally pass state=\"firing\" or state=\"pending\" to narrow.",
+		Annotations: &mcp.ToolAnnotations{
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+		},
+	}, ts.getAlerts)
 }

@@ -88,6 +88,44 @@ the migration path. In the Go SDK this is `StreamableHTTPHandler{Stateless: true
   notifications need a session and are **out** - this repo documents exactly where that
   boundary is
 
+## Quickstart
+
+```bash
+docker compose -f deploy/compose.yaml up -d --build
+```
+
+That starts the full demo: Prometheus scraping node-exporter, a **mock vLLM
+exporter** (verbatim `vllm:*` metric names, simulated values - swap in a real
+vLLM endpoint with one scrape-config change, see `deploy/prometheus.yml`),
+and **two stateless promscope replicas behind nginx round-robin** on
+`http://localhost:8090/mcp`. The `X-Promscope-Backend` response header shows
+which replica answered.
+
+Try it with the [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
+(`npx @modelcontextprotocol/inspector`, transport Streamable HTTP) or replay
+the requests in [`docs/m2-tools.http`](docs/m2-tools.http). For local
+development without Docker: `go run ./cmd/promscope` against any Prometheus.
+
+Operational endpoints on each replica: `/healthz` (liveness) and `/metrics`
+(promscope's own request counts, latencies, and upstream call outcomes).
+
+## Configuration
+
+Flags or `PROMSCOPE_*` env vars (flag > env > default; malformed values
+refuse to boot). Guardrail limits must be identical across replicas.
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `PROMSCOPE_LISTEN_ADDR` | `:8090` | HTTP listen address |
+| `PROMSCOPE_PROMETHEUS_URL` | `http://localhost:9090` | Upstream Prometheus |
+| `PROMSCOPE_STATELESS` | `true` | Stateless transport (false exists solely for the load-test A/B) |
+| `PROMSCOPE_MAX_LOOKBACK` | `24h` | Widest range-query window |
+| `PROMSCOPE_MAX_SERIES` | `50` | Series per result before truncation |
+| `PROMSCOPE_MAX_POINTS` | `200` | Points-per-series budget (drives step auto-compute) |
+| `PROMSCOPE_QUERY_TIMEOUT` | `10s` | Outer per-query budget; Prometheus gets 90% |
+| `PROMSCOPE_MAX_METRIC_NAMES` | `500` | list_metrics cap |
+| `PROMSCOPE_MAX_RESPONSE_BYTES` | `1048576` | Cap on any upstream response body |
+
 ## Accepted limitations
 
 - **No auth** - deliberate scope decision; front it with your own gateway if exposed.

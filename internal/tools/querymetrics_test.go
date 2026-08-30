@@ -79,17 +79,18 @@ func TestQueryMetricsStepAutoCompute(t *testing.T) {
 	fake := &fakeClient{querySeries: sampleSeries(1)}
 	ts := newTestToolset(fake)
 
-	// 10h window / 200 points = 180s minimum step.
+	// 10h window, 200-point budget: ceil(36000s / 199) = 181s. The divisor
+	// is maxPoints-1 because Prometheus returns floor(window/step)+1 points.
 	_, out, err := ts.queryMetrics(context.Background(), nil,
 		QueryMetricsInput{Query: "up", Mode: "range", Start: "-10h"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if fake.lastStep != 180*time.Second {
-		t.Errorf("auto step = %v, want 180s (10h / 200 points)", fake.lastStep)
+	if fake.lastStep != 181*time.Second {
+		t.Errorf("auto step = %v, want 181s (ceil(10h / 199))", fake.lastStep)
 	}
-	if out.StepUsed != "3m0s" {
-		t.Errorf("StepUsed = %q, want 3m0s", out.StepUsed)
+	if out.StepUsed != "3m1s" {
+		t.Errorf("StepUsed = %q, want 3m1s", out.StepUsed)
 	}
 	if strings.Contains(out.Hint, "coarsened") {
 		t.Errorf("auto-computed step is not coarsening, hint = %q", out.Hint)
@@ -100,15 +101,15 @@ func TestQueryMetricsStepCoarsened(t *testing.T) {
 	fake := &fakeClient{querySeries: sampleSeries(1)}
 	ts := newTestToolset(fake)
 
-	// 1s step over 10h would be 36000 points/series; must coarsen to 180s
+	// 1s step over 10h would be 36000 points/series; must coarsen to 181s
 	// and say so.
 	_, out, err := ts.queryMetrics(context.Background(), nil,
 		QueryMetricsInput{Query: "up", Mode: "range", Start: "-10h", Step: "1s"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if fake.lastStep != 180*time.Second {
-		t.Errorf("coarsened step = %v, want 180s", fake.lastStep)
+	if fake.lastStep != 181*time.Second {
+		t.Errorf("coarsened step = %v, want 181s", fake.lastStep)
 	}
 	if !strings.Contains(out.Hint, "coarsened") {
 		t.Errorf("coarsening must be reported, hint = %q", out.Hint)
@@ -177,6 +178,39 @@ func TestQueryMetricsWarningsSurface(t *testing.T) {
 	}
 	if !strings.Contains(out.Hint, "prometheus warning") {
 		t.Errorf("warnings must surface in the hint, got %q", out.Hint)
+	}
+}
+
+func TestQueryMetricsEmptyResultHint(t *testing.T) {
+	ts := newTestToolset(&fakeClient{querySeries: nil})
+
+	_, out, err := ts.queryMetrics(context.Background(), nil, QueryMetricsInput{Query: "no_such_metric"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.TotalSeries != 0 || len(out.Series) != 0 {
+		t.Fatalf("expected empty result, got %+v", out)
+	}
+	if !strings.Contains(out.Hint, "list_metrics") {
+		t.Errorf("empty result must point at discovery, hint = %q", out.Hint)
+	}
+}
+
+func TestQueryMetricsFutureEndClamped(t *testing.T) {
+	fake := &fakeClient{querySeries: sampleSeries(1)}
+	ts := newTestToolset(fake)
+
+	futureEnd := time.Now().Add(2 * time.Hour).Format(time.RFC3339)
+	_, out, err := ts.queryMetrics(context.Background(), nil,
+		QueryMetricsInput{Query: "up", Mode: "range", Start: "-30m", End: futureEnd})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if fake.lastEnd.After(time.Now().Add(time.Minute)) {
+		t.Errorf("end was not clamped: %v went upstream", fake.lastEnd)
+	}
+	if !strings.Contains(out.Hint, "clamped") {
+		t.Errorf("clamping must be reported, hint = %q", out.Hint)
 	}
 }
 

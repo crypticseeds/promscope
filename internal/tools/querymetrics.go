@@ -87,6 +87,12 @@ func (t *toolset) queryMetrics(ctx context.Context, _ *mcp.CallToolRequest, in Q
 				return nil, zero, fmt.Errorf("invalid end: %v", err)
 			}
 		}
+		// A future end would make Prometheus silently return fewer points
+		// than the window implies; clamp and say so.
+		endClamped := false
+		if end.After(now) {
+			end, endClamped = now, true
+		}
 		window := end.Sub(start)
 		if window <= 0 {
 			return nil, zero, fmt.Errorf("end (%s) must be after start (%s)", end.Format(time.RFC3339), start.Format(time.RFC3339))
@@ -109,6 +115,9 @@ func (t *toolset) queryMetrics(ctx context.Context, _ *mcp.CallToolRequest, in Q
 		if coarsened {
 			out.Hint = joinHints(out.Hint,
 				fmt.Sprintf("step coarsened to %s to keep points per series <= %d", step, t.limits.MaxPointsPerSeries))
+		}
+		if endClamped {
+			out.Hint = joinHints(out.Hint, "end was in the future - clamped to now")
 		}
 		return nil, out, nil
 
@@ -145,9 +154,13 @@ func parseTimeOrOffset(s string, now time.Time) (time.Time, error) {
 
 // chooseStep returns the effective range step: the caller's, unless it would
 // exceed the points-per-series budget, in which case the minimum compliant
-// step (window/maxPoints, whole seconds). Omitted step = auto-compute.
+// step (whole seconds). Omitted step = auto-compute.
+//
+// Fencepost: Prometheus returns floor(window/step)+1 samples, so the divisor
+// is maxPoints-1 - dividing by maxPoints would allow maxPoints+1 points and
+// make the documented cap a lie by one.
 func chooseStep(requested string, window time.Duration, maxPoints int) (step time.Duration, coarsened bool, err error) {
-	minStep := time.Duration(math.Ceil(window.Seconds()/float64(maxPoints))) * time.Second
+	minStep := time.Duration(math.Ceil(window.Seconds()/float64(maxPoints-1))) * time.Second
 	if minStep < time.Second {
 		minStep = time.Second
 	}
@@ -169,6 +182,13 @@ func chooseStep(requested string, window time.Duration, maxPoints int) (step tim
 // visible, never silent.
 func shapeQueryOutput(mode string, series []promclient.Series, warns []string, maxSeries int) QueryMetricsOutput {
 	out := QueryMetricsOutput{Mode: mode, TotalSeries: len(series), Series: []QuerySeries{}}
+
+	// An empty result is ambiguous to an agent: wrong metric name and
+	// "expression valid, nothing matched" look identical. Point at the fix.
+	// No early return: Prometheus warnings below must still surface.
+	if len(series) == 0 {
+		out.Hint = "0 series returned - verify the metric name with list_metrics, or widen the selector/time range"
+	}
 
 	if len(series) > maxSeries {
 		series = series[:maxSeries]

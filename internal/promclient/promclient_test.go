@@ -18,7 +18,7 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) *HTTP {
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close) // no leaked listeners, however the test exits
 
-	c, err := New(srv.URL)
+	c, err := New(srv.URL, DefaultMaxResponseBytes)
 	if err != nil {
 		t.Fatalf("New(%q): %v", srv.URL, err)
 	}
@@ -217,22 +217,33 @@ func TestQueryRangeMatrix(t *testing.T) {
 }
 
 func TestQueryResponseCap(t *testing.T) {
-	// Serve a body just over the 1 MiB cap: a valid JSON prefix followed by
-	// filler, so the failure is the cap - not the JSON syntax.
-	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+	// A tiny configured cap against a response that exceeds it: the failure
+	// must be the cap, reported with the configured size and the fix.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[`))
-		filler := strings.Repeat(" ", 1<<20)
-		w.Write([]byte(filler))
+		w.Write([]byte(strings.Repeat(" ", 2048)))
 		w.Write([]byte(`]}}`))
-	})
+	}))
+	t.Cleanup(srv.Close)
 
-	_, _, err := c.Query(context.Background(), "up", time.Now(), 9*time.Second)
+	c, err := New(srv.URL, 512)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, _, err = c.Query(context.Background(), "up", time.Now(), 9*time.Second)
 	if err == nil {
 		t.Fatal("want error when response exceeds cap, got nil")
 	}
-	if !strings.Contains(err.Error(), "1 MiB") || !strings.Contains(err.Error(), "aggregate") {
-		t.Errorf("error should name the cap and the fix, got: %v", err)
+	if !strings.Contains(err.Error(), "512-byte cap") || !strings.Contains(err.Error(), "aggregate") {
+		t.Errorf("error should name the configured cap and the fix, got: %v", err)
+	}
+}
+
+func TestNewRejectsNonPositiveCap(t *testing.T) {
+	if _, err := New("http://localhost:9090", 0); err == nil {
+		t.Fatal("want error for zero byte cap, got nil")
 	}
 }
 

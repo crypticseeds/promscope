@@ -27,10 +27,11 @@ const version = "0.1.0"
 // immutable afterwards: mutable runtime config would need coordination
 // across replicas, which is state (SPEC section 5).
 type config struct {
-	listenAddr    string
-	prometheusURL string
-	stateless     bool
-	limits        tools.Limits
+	listenAddr       string
+	prometheusURL    string
+	stateless        bool
+	limits           tools.Limits
+	maxResponseBytes int
 }
 
 // envOr returns the environment variable's value, or def if unset/empty.
@@ -113,6 +114,9 @@ func parseConfig() config {
 	flag.IntVar(&cfg.limits.MaxMetricNames, "max-metric-names",
 		envInt("PROMSCOPE_MAX_METRIC_NAMES", def.MaxMetricNames),
 		"list_metrics cap before truncation")
+	flag.IntVar(&cfg.maxResponseBytes, "max-response-bytes",
+		envInt("PROMSCOPE_MAX_RESPONSE_BYTES", promclient.DefaultMaxResponseBytes),
+		"cap on any Prometheus response body in bytes")
 	flag.Parse()
 	return cfg
 }
@@ -136,9 +140,9 @@ func main() {
 	// The Prometheus client is constructed once and shared by every request:
 	// it is stateless (an http.Client and a base URL), so replicas stay
 	// interchangeable. Construction only fails on an unparseable URL.
-	promClient, err := promclient.New(cfg.prometheusURL)
+	promClient, err := promclient.New(cfg.prometheusURL, int64(cfg.maxResponseBytes))
 	if err != nil {
-		logger.Error("invalid -prometheus-url", "url", cfg.prometheusURL, "error", err)
+		logger.Error("invalid prometheus client config", "url", cfg.prometheusURL, "error", err)
 		os.Exit(2)
 	}
 	tools.Register(server, promClient, cfg.limits)
@@ -185,6 +189,7 @@ func main() {
 			"stateless", cfg.stateless,
 			"prometheus_url", cfg.prometheusURL,
 			"limits", fmt.Sprintf("%+v", cfg.limits),
+			"max_response_bytes", cfg.maxResponseBytes,
 			"version", version)
 		if err := httpServer.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err

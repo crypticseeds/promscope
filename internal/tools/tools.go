@@ -32,11 +32,13 @@ func DefaultLimits() Limits {
 	}
 }
 
-// Validate rejects nonsense before it can corrupt guardrail math (a zero
-// MaxPointsPerSeries would divide by zero in step auto-compute).
+// Validate rejects nonsense before it can corrupt guardrail math.
 func (l Limits) Validate() error {
-	if l.MaxLookback <= 0 || l.MaxSeries <= 0 || l.MaxPointsPerSeries <= 0 || l.MaxMetricNames <= 0 {
+	if l.MaxLookback <= 0 || l.MaxSeries <= 0 || l.MaxMetricNames <= 0 {
 		return fmt.Errorf("all limits must be positive: %+v", l)
+	}
+	if l.MaxPointsPerSeries < 2 {
+		return fmt.Errorf("max points per series must be at least 2: step auto-compute divides by maxPoints-1 (Prometheus returns floor(window/step)+1 samples)")
 	}
 	if l.QueryTimeout < time.Second {
 		return fmt.Errorf("query timeout %s is below the 1s floor", l.QueryTimeout)

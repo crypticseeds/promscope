@@ -20,7 +20,7 @@ func TestLiveAgainstRealPrometheus(t *testing.T) {
 		t.Skip("set PROMSCOPE_LIVE_URL to run the live smoke test")
 	}
 
-	c, err := New(url)
+	c, err := New(url, DefaultMaxResponseBytes)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

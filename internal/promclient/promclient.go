@@ -81,26 +81,28 @@ type Client interface {
 
 // HTTP is the real Client, backed by the official client_golang v1 API.
 type HTTP struct {
-	api promv1.API
+	api      promv1.API
+	maxBytes int64
 }
 
 // Compile-time proof that *HTTP satisfies Client: if the method set drifts,
 // the build breaks here instead of at a distant call site.
 var _ Client = (*HTTP)(nil)
 
-// maxResponseBytes caps any Prometheus response body (SPEC section 4). A
-// pathological query can return tens of MB; the cap turns that into a clean
-// error instead of an OOM or a context-window bomb downstream.
-const maxResponseBytes = 1 << 20 // 1 MiB
+// DefaultMaxResponseBytes caps any Prometheus response body (SPEC section
+// 4). A pathological query can return tens of MB; the cap turns that into a
+// clean error instead of an OOM or a context-window bomb downstream.
+const DefaultMaxResponseBytes = 1 << 20 // 1 MiB
 
 // errBodyTooLarge is detected by substring (see tooLarge) because
 // client_golang does not always preserve wrapped errors across its reads.
-var errBodyTooLarge = errors.New("promclient: response exceeded 1 MiB cap")
+var errBodyTooLarge = errors.New("promclient: response exceeded body cap")
 
-// limitRoundTripper enforces maxResponseBytes on every response body by
+// limitRoundTripper enforces the byte cap on every response body by
 // wrapping it in a reader that fails once the cap is crossed.
 type limitRoundTripper struct {
 	next http.RoundTripper
+	max  int64
 }
 
 func (l limitRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -108,7 +110,7 @@ func (l limitRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	if err != nil {
 		return nil, err
 	}
-	resp.Body = &cappedBody{rc: resp.Body, remaining: maxResponseBytes}
+	resp.Body = &cappedBody{rc: resp.Body, remaining: l.max}
 	return resp, nil
 }
 
@@ -138,15 +140,20 @@ func tooLarge(err error) bool {
 }
 
 // New returns an HTTP client for the Prometheus server at baseURL.
-func New(baseURL string) (*HTTP, error) {
+// maxResponseBytes caps every response body; use DefaultMaxResponseBytes
+// unless configured otherwise.
+func New(baseURL string, maxResponseBytes int64) (*HTTP, error) {
+	if maxResponseBytes <= 0 {
+		return nil, fmt.Errorf("promclient: response byte cap must be positive, got %d", maxResponseBytes)
+	}
 	c, err := api.NewClient(api.Config{
 		Address:      baseURL,
-		RoundTripper: limitRoundTripper{next: api.DefaultRoundTripper},
+		RoundTripper: limitRoundTripper{next: api.DefaultRoundTripper, max: maxResponseBytes},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("promclient: %w", err)
 	}
-	return &HTTP{api: promv1.NewAPI(c)}, nil
+	return &HTTP{api: promv1.NewAPI(c), maxBytes: maxResponseBytes}, nil
 }
 
 func (h *HTTP) MetricNames(ctx context.Context) ([]string, error) {
@@ -221,7 +228,7 @@ func labelSetToMap(ls model.LabelSet) map[string]string {
 func (h *HTTP) Query(ctx context.Context, promql string, ts time.Time, timeout time.Duration) ([]Series, []string, error) {
 	val, warns, err := h.api.Query(ctx, promql, ts, promv1.WithTimeout(timeout))
 	if err != nil {
-		return nil, nil, queryErr("query", err)
+		return nil, nil, h.queryErr("query", err)
 	}
 	series, err := toSeries(val)
 	if err != nil {
@@ -234,7 +241,7 @@ func (h *HTTP) QueryRange(ctx context.Context, promql string, start, end time.Ti
 	r := promv1.Range{Start: start, End: end, Step: step}
 	val, warns, err := h.api.QueryRange(ctx, promql, r, promv1.WithTimeout(timeout))
 	if err != nil {
-		return nil, nil, queryErr("range query", err)
+		return nil, nil, h.queryErr("range query", err)
 	}
 	series, err := toSeries(val)
 	if err != nil {
@@ -246,9 +253,9 @@ func (h *HTTP) QueryRange(ctx context.Context, promql string, start, end time.Ti
 // queryErr maps upstream failures to actionable messages, special-casing the
 // response cap: the fix for "too large" is a narrower query, and only this
 // layer knows that is what happened.
-func queryErr(op string, err error) error {
+func (h *HTTP) queryErr(op string, err error) error {
 	if tooLarge(err) {
-		return fmt.Errorf("promclient: %s: %w - aggregate (e.g. avg by(...)) or narrow the selector", op, errBodyTooLarge)
+		return fmt.Errorf("promclient: %s: response exceeded the %d-byte cap - aggregate (e.g. avg by(...)) or narrow the selector", op, h.maxBytes)
 	}
 	return fmt.Errorf("promclient: %s: %w", op, err)
 }

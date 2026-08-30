@@ -43,4 +43,16 @@ func Register(server *mcp.Server, prom promclient.Client) {
 			IdempotentHint: true,
 		},
 	}, ts.getAlerts)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "query_metrics",
+		Description: "Evaluate a PromQL expression against Prometheus. Default mode is an instant query at now; " +
+			"set mode=\"range\" with start (e.g. -1h) for a time series. " +
+			"Prefer aggregations (rate(), avg by(), histogram_quantile()) over raw selectors: results are capped at " +
+			"50 series and 200 points per series, and truncation is reported in the hint.",
+		Annotations: &mcp.ToolAnnotations{
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+		},
+	}, ts.queryMetrics)
 }

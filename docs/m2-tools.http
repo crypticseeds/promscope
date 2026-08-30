@@ -65,3 +65,32 @@ Content-Type: application/json
 Accept: application/json, text/event-stream
 
 {"jsonrpc": "2.0", "id": 17, "method": "tools/call", "params": {"name": "get_alerts", "arguments": {"state": "resolved"}}}
+
+### 9. query_metrics instant - aggregated, so it stays under the series cap
+POST http://localhost:8090/mcp
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{"jsonrpc": "2.0", "id": 20, "method": "tools/call", "params": {"name": "query_metrics", "arguments": {"query": "sum by (handler) (rate(prometheus_http_requests_total[5m]))"}}}
+
+### 10. query_metrics range - relative start, auto-computed step (watch stepUsed)
+POST http://localhost:8090/mcp
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{"jsonrpc": "2.0", "id": 21, "method": "tools/call", "params": {"name": "query_metrics", "arguments": {"query": "go_goroutines", "mode": "range", "start": "-15m"}}}
+
+### 11. step coarsening - 1s over 10h would be 36000 points; expect stepUsed 3m0s
+### and a "coarsened" hint
+POST http://localhost:8090/mcp
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{"jsonrpc": "2.0", "id": 22, "method": "tools/call", "params": {"name": "query_metrics", "arguments": {"query": "go_goroutines", "mode": "range", "start": "-10h", "step": "1s"}}}
+
+### 12. lookback guardrail - 25h window, expect isError naming the 24h limit
+POST http://localhost:8090/mcp
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{"jsonrpc": "2.0", "id": 23, "method": "tools/call", "params": {"name": "query_metrics", "arguments": {"query": "up", "mode": "range", "start": "-25h"}}}

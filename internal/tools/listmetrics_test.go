@@ -23,6 +23,13 @@ type fakeClient struct {
 	querySeries []promclient.Series
 	queryWarns  []string
 	queryErr    error
+
+	// recorded by Query/QueryRange for assertions
+	lastQuery   string
+	lastStart   time.Time
+	lastEnd     time.Time
+	lastStep    time.Duration
+	lastTimeout time.Duration
 }
 
 func (f *fakeClient) MetricNames(context.Context) ([]string, error) {
@@ -37,11 +44,13 @@ func (f *fakeClient) Alerts(context.Context) ([]promclient.Alert, error) {
 	return f.alerts, f.alertsErr
 }
 
-func (f *fakeClient) Query(context.Context, string, time.Time, time.Duration) ([]promclient.Series, []string, error) {
+func (f *fakeClient) Query(_ context.Context, q string, _ time.Time, timeout time.Duration) ([]promclient.Series, []string, error) {
+	f.lastQuery, f.lastTimeout = q, timeout
 	return f.querySeries, f.queryWarns, f.queryErr
 }
 
-func (f *fakeClient) QueryRange(context.Context, string, time.Time, time.Time, time.Duration, time.Duration) ([]promclient.Series, []string, error) {
+func (f *fakeClient) QueryRange(_ context.Context, q string, start, end time.Time, step, timeout time.Duration) ([]promclient.Series, []string, error) {
+	f.lastQuery, f.lastStart, f.lastEnd, f.lastStep, f.lastTimeout = q, start, end, step, timeout
 	return f.querySeries, f.queryWarns, f.queryErr
 }
 

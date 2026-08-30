@@ -22,7 +22,7 @@ func (e *errClient) MetricNames(context.Context) ([]string, error) { return nil,
 func (e *errClient) Metadata(context.Context) (map[string]promclient.Meta, error) {
 	return nil, e.err
 }
-func (e *errClient) Alerts(context.Context) ([]promclient.Alert, error)   { return nil, e.err }
+func (e *errClient) Alerts(context.Context) ([]promclient.Alert, error)    { return nil, e.err }
 func (e *errClient) Rules(context.Context) ([]promclient.RuleGroup, error) { return nil, e.err }
 func (e *errClient) Query(context.Context, string, time.Time, time.Duration) ([]promclient.Series, []string, error) {
 	return nil, nil, e.err

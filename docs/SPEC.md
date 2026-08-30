@@ -78,15 +78,23 @@ That is the complete surface. **No fourth tool.**
   in a thin local interface for testability. Decision D2: the boring standard choice -
   our innovation budget belongs to MCP, not JSON parsing.
 - **Guardrails** - enforced server-side, not trusted to the model:
-  - range queries capped at a max lookback window (config, default 24h)
+  - range queries capped at a max lookback window (config, default 24h).
+    Honesty note: this bounds the *requested* window - PromQL range
+    selectors, subqueries, `offset`, and `@` can still reach older data;
+    compute isolation belongs to Prometheus (`--query.max-samples`,
+    `--query.max-concurrency`, retention)
   - step auto-computed so points per series ≤ the budget (config, default
     200; fencepost-exact - Prometheus returns floor(window/step)+1 samples);
     max series per result (config, default 50; truncate + `truncated: true`
     \+ hint to aggregate); future range ends clamped to now and reported
-  - per-request timeout budget (config, default 10s) via `context.WithTimeout`;
-    Prometheus's own `timeout` query param set to 90% of it so upstream quits first
+  - per-request timeout budget (config, default 10s) applied to **every**
+    tool and resource handler; queries additionally pass 90% of it as
+    Prometheus's own `timeout` param so upstream quits first
+  - bounded upstream concurrency (config, default 10 in-flight); saturation
+    returns a retryable overload error instead of piling onto Prometheus
   - upstream response body capped (config, default 1 MiB) at the HTTP
-    transport, reported with the configured size and the fix
+    transport - exact at the boundary - reported with the configured size
+    and the fix; PromQL strings capped at 4096 chars as a sanity bound
 - **Self-observability** - `/healthz` endpoint and `/metrics` (Prometheus format) on the
   promscope server itself: request counts, latencies, upstream errors.
 

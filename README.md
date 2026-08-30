@@ -98,12 +98,13 @@ That starts the full demo: Prometheus scraping node-exporter, a **mock vLLM
 exporter** (verbatim `vllm:*` metric names, simulated values - swap in a real
 vLLM endpoint with one scrape-config change, see `deploy/prometheus.yml`),
 and **two stateless promscope replicas behind nginx round-robin** on
-`http://localhost:8090/mcp`. The `X-Promscope-Backend` response header shows
-which replica answered.
+`http://localhost:8090/mcp` (loopback only - nothing here has auth, so
+nothing here listens on the LAN). The `X-Promscope-Backend` response header
+shows which replica answered.
 
 Try it with the [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
-(`npx @modelcontextprotocol/inspector`, transport Streamable HTTP) or replay
-the requests in [`docs/m2-tools.http`](docs/m2-tools.http). For local
+(`npx @modelcontextprotocol/inspector@2.4.0`, transport Streamable HTTP) or
+replay the requests in [`docs/m2-tools.http`](docs/m2-tools.http). For local
 development without Docker: `go run ./cmd/promscope` against any Prometheus.
 
 Operational endpoints on each replica: `/healthz` (liveness) and `/metrics`
@@ -111,19 +112,22 @@ Operational endpoints on each replica: `/healthz` (liveness) and `/metrics`
 
 ## Configuration
 
-Flags or `PROMSCOPE_*` env vars (flag > env > default; malformed values
-refuse to boot). Guardrail limits must be identical across replicas.
+Flags or `PROMSCOPE_*` env vars (flag > env > default). One deliberate sharp
+edge: a *malformed* env value refuses to boot even when a flag overrides it -
+broken env deserves fixing, not shadowing. Guardrail limits must be identical
+across replicas.
 
 | Env var | Default | Meaning |
 |---|---|---|
 | `PROMSCOPE_LISTEN_ADDR` | `:8090` | HTTP listen address |
 | `PROMSCOPE_PROMETHEUS_URL` | `http://localhost:9090` | Upstream Prometheus |
 | `PROMSCOPE_STATELESS` | `true` | Stateless transport (false exists solely for the load-test A/B) |
-| `PROMSCOPE_MAX_LOOKBACK` | `24h` | Widest range-query window |
+| `PROMSCOPE_MAX_LOOKBACK` | `24h` | Widest range-query window (bounds the requested window; PromQL `offset`/`@` can still reach older data - compute isolation is Prometheus's job) |
 | `PROMSCOPE_MAX_SERIES` | `50` | Series per result before truncation |
 | `PROMSCOPE_MAX_POINTS` | `200` | Points-per-series budget (drives step auto-compute) |
-| `PROMSCOPE_QUERY_TIMEOUT` | `10s` | Outer per-query budget; Prometheus gets 90% |
+| `PROMSCOPE_QUERY_TIMEOUT` | `10s` | Per-call budget for every tool and resource; queries hand Prometheus 90% of it |
 | `PROMSCOPE_MAX_METRIC_NAMES` | `500` | list_metrics cap |
+| `PROMSCOPE_MAX_INFLIGHT` | `10` | Concurrent upstream requests; beyond it callers get a retryable overload error |
 | `PROMSCOPE_MAX_RESPONSE_BYTES` | `1048576` | Cap on any upstream response body |
 
 ## Accepted limitations

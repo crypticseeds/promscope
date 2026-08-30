@@ -80,8 +80,9 @@ Accept: application/json, text/event-stream
 
 {"jsonrpc": "2.0", "id": 21, "method": "tools/call", "params": {"name": "query_metrics", "arguments": {"query": "go_goroutines", "mode": "range", "start": "-15m"}}}
 
-### 11. step coarsening - 1s over 10h would be 36000 points; expect stepUsed 3m0s
-### and a "coarsened" hint
+### 11. step coarsening - 1s over 10h would be 36000 points; expect stepUsed 3m1s
+### (ceil(36000s / 199) - the divisor is maxPoints-1, see chooseStep) and a
+### "coarsened" hint
 POST http://localhost:8090/mcp
 Content-Type: application/json
 Accept: application/json, text/event-stream

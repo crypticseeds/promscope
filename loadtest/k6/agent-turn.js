@@ -80,7 +80,14 @@ export default function () {
     },
   });
   check(init, { 'initialize 200': (r) => r.status === 200 });
+
+  // Spec-compliant clients echo the NEGOTIATED protocol version on every
+  // subsequent request, and the session id when one was issued.
+  const initBody = parseBody(init);
   const sess = sessionHeaderOf(init);
+  if (initBody && initBody.result && initBody.result.protocolVersion) {
+    sess['MCP-Protocol-Version'] = initBody.result.protocolVersion;
+  }
 
   // Spec-compliant clients send this after initialize. In stateful mode it
   // round-robins like everything else - the handshake itself can strand.
@@ -115,6 +122,16 @@ export default function () {
     turnFailures.add(failed);
     check(res, { 'tool call 200': (r) => r.status === 200 });
   });
+
+  // 3. Spec-compliant teardown: a stateful session is DELETEd when the
+  // client is done with it - without this, every iteration leaks a session
+  // until the server's SessionTimeout reaps it. Round-robin means the DELETE
+  // itself can land on the wrong replica; that failure mode is already
+  // measured above, so its status is not counted again here.
+  const sid = sess['Mcp-Session-Id'];
+  if (sid) {
+    http.del(`${BASE}/mcp`, null, { headers: Object.assign({}, HDRS, sess) });
+  }
 
   sleep(1 + Math.random() * 2); // agent think time
 }

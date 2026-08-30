@@ -18,6 +18,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/crypticseeds/promscope/internal/promclient"
+	"github.com/crypticseeds/promscope/internal/server"
 	"github.com/crypticseeds/promscope/internal/tools"
 )
 
@@ -131,7 +132,7 @@ func main() {
 	}
 
 	// The MCP server: promscope's identity in the initialize handshake.
-	server := mcp.NewServer(&mcp.Implementation{
+	mcpServer := mcp.NewServer(&mcp.Implementation{
 		Name:    "promscope",
 		Title:   "promscope - Prometheus over MCP",
 		Version: version,
@@ -140,19 +141,24 @@ func main() {
 	// The Prometheus client is constructed once and shared by every request:
 	// it is stateless (an http.Client and a base URL), so replicas stay
 	// interchangeable. Construction only fails on an unparseable URL.
+	// Self-observability first: the client is wrapped so every upstream call
+	// is counted, then handed to the tools. Decorating the interface means
+	// neither promclient nor the handlers know instrumentation exists.
+	obs := server.New(version)
+
 	promClient, err := promclient.New(cfg.prometheusURL, int64(cfg.maxResponseBytes))
 	if err != nil {
 		logger.Error("invalid prometheus client config", "url", cfg.prometheusURL, "error", err)
 		os.Exit(2)
 	}
-	tools.Register(server, promClient, cfg.limits)
+	tools.Register(mcpServer, obs.WrapClient(promClient), cfg.limits)
 
 	// The getServer callback exists so multi-tenant deployments can choose a
 	// server per request; we always return the same one. Stateless mode gives
 	// every POST a throwaway pre-initialized session, never issues or checks
 	// Mcp-Session-Id, and rejects GET/DELETE with 405.
 	mcpHandler := mcp.NewStreamableHTTPHandler(
-		func(*http.Request) *mcp.Server { return server },
+		func(*http.Request) *mcp.Server { return mcpServer },
 		&mcp.StreamableHTTPOptions{
 			Stateless: cfg.stateless,
 			Logger:    logger,
@@ -163,15 +169,12 @@ func main() {
 		},
 	)
 
-	// Not "POST /mcp": in the stateful A/B configuration the handler also
-	// serves GET (SSE stream) and DELETE (session teardown). Method policy
-	// belongs to the SDK, which knows which mode it is in.
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcpHandler)
-
+	// The full HTTP surface: instrumented /mcp, /healthz, /metrics. In the
+	// stateful A/B configuration the MCP handler also serves GET (SSE) and
+	// DELETE (session teardown); method policy belongs to the SDK.
 	httpServer := &http.Server{
 		Addr:    cfg.listenAddr,
-		Handler: mux,
+		Handler: obs.Handler(mcpHandler),
 		// Slowloris protection. No WriteTimeout: it would sever long-lived
 		// SSE responses in the stateful configuration.
 		ReadHeaderTimeout: 5 * time.Second,

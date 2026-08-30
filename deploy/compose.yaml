@@ -1,0 +1,63 @@
+name: promscope
+
+# Both replicas alias this one block: identical config by construction -
+# the config-homogeneity corollary from SPEC section 5. PROMSCOPE_STATELESS
+# is env-substituted so the M5 A/B experiment flips BOTH replicas at once:
+#   PROMSCOPE_STATELESS=false docker compose -f deploy/compose.yaml up -d
+x-promscope: &promscope
+  build:
+    context: ..
+    args:
+      CMD: promscope
+  environment:
+    PROMSCOPE_PROMETHEUS_URL: http://prometheus:9090
+    PROMSCOPE_STATELESS: ${PROMSCOPE_STATELESS:-true}
+  healthcheck:
+    # Distroless has no shell; the binary probes itself (exec form).
+    test: ["CMD", "/app", "-healthcheck"]
+    interval: 5s
+    timeout: 2s
+    retries: 3
+  depends_on:
+    prometheus:
+      condition: service_healthy
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./rules.yml:/etc/prometheus/rules.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/ready"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+
+  node-exporter:
+    image: prom/node-exporter:v1.9.1
+
+  mock-vllm:
+    build:
+      context: ..
+      args:
+        CMD: mock-vllm-exporter
+
+  promscope-a: *promscope
+  promscope-b: *promscope
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      # The stack answers on the same port a locally-run promscope would,
+      # so docs/m2-tools.http and MCP Inspector work unchanged.
+      - "8090:8090"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      promscope-a:
+        condition: service_healthy
+      promscope-b:
+        condition: service_healthy

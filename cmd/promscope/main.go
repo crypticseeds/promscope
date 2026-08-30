@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -33,6 +34,7 @@ type config struct {
 	stateless        bool
 	limits           tools.Limits
 	maxResponseBytes int
+	healthcheck      bool
 }
 
 // envOr returns the environment variable's value, or def if unset/empty.
@@ -118,6 +120,8 @@ func parseConfig() config {
 	flag.IntVar(&cfg.maxResponseBytes, "max-response-bytes",
 		envInt("PROMSCOPE_MAX_RESPONSE_BYTES", promclient.DefaultMaxResponseBytes),
 		"cap on any Prometheus response body in bytes")
+	flag.BoolVar(&cfg.healthcheck, "healthcheck", false,
+		"probe the local /healthz and exit 0/1 - container healthcheck helper for shell-less images")
 	flag.Parse()
 	return cfg
 }
@@ -125,6 +129,21 @@ func parseConfig() config {
 func main() {
 	cfg := parseConfig()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	// Healthcheck mode: distroless images have no shell or curl, so the
+	// container healthcheck execs this same binary against its sibling.
+	if cfg.healthcheck {
+		addr := cfg.listenAddr
+		if strings.HasPrefix(addr, ":") {
+			addr = "127.0.0.1" + addr
+		}
+		client := &http.Client{Timeout: 2 * time.Second}
+		resp, err := client.Get("http://" + addr + "/healthz")
+		if err != nil || resp.StatusCode != http.StatusOK {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 
 	if err := cfg.limits.Validate(); err != nil {
 		logger.Error("invalid limits", "error", err)

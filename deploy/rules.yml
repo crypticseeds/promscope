@@ -1,0 +1,16 @@
+groups:
+  - name: demo
+    rules:
+      # One recording rule so prometheus://rules shows both kinds.
+      - record: job:up:sum
+        expr: sum by (job) (up)
+
+      # Always fires (after 30s pending) so get_alerts never demos empty.
+      - alert: AlwaysFiring
+        expr: vector(1)
+        for: 30s
+        labels:
+          severity: info
+        annotations:
+          summary: Demo alert that always fires
+          description: Exists so get_alerts and prometheus://rules have real content to show.

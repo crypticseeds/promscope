@@ -1,0 +1,10 @@
+# H2 override: route all traffic to ONE replica.
+#   docker compose -f deploy/compose.yaml -f deploy/compose.single.yaml up -d nginx
+# Restore both replicas:
+#   docker compose -f deploy/compose.yaml up -d nginx
+# (nginx configs are bind mounts: the container must be recreated/restarted
+# to pick up a different file - compose does that when the volume changes.)
+services:
+  nginx:
+    volumes:
+      - ./nginx-single.conf:/etc/nginx/nginx.conf:ro

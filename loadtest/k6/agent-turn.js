@@ -133,5 +133,5 @@ export default function () {
     http.del(`${BASE}/mcp`, null, { headers: Object.assign({}, HDRS, sess) });
   }
 
-  sleep(1 + Math.random() * 2); // agent think time
+  sleep(Number(__ENV.THINK_MAX_S ?? 3) * Math.random()); // agent think time; THINK_MAX_S=0 for saturation runs (H2)
 }

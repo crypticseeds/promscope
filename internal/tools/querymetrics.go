@@ -12,15 +12,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Guardrails (SPEC section 4). Constants for now; they move to PROMSCOPE_*
-// config in the config pass, together with maxMetricNames.
-const (
-	maxLookback        = 24 * time.Hour
-	maxPointsPerSeries = 200
-	maxSeries          = 50
-	queryTimeout       = 10 * time.Second // outer budget; upstream gets 90%
-)
-
 // QueryMetricsInput drives both query modes. Instant is the default; range
 // needs start (and optionally end/step).
 type QueryMetricsInput struct {
@@ -64,9 +55,9 @@ func (t *toolset) queryMetrics(ctx context.Context, _ *mcp.CallToolRequest, in Q
 	// The outer budget. The upstream timeout param is 90% of it, so
 	// Prometheus gives up first and we relay its clean error instead of a
 	// raw context deadline (SPEC section 4).
-	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	ctx, cancel := context.WithTimeout(ctx, t.limits.QueryTimeout)
 	defer cancel()
-	upstreamTimeout := queryTimeout * 9 / 10
+	upstreamTimeout := t.limits.QueryTimeout * 9 / 10
 
 	now := time.Now()
 
@@ -77,9 +68,9 @@ func (t *toolset) queryMetrics(ctx context.Context, _ *mcp.CallToolRequest, in Q
 		}
 		series, warns, err := t.prom.Query(ctx, in.Query, now, upstreamTimeout)
 		if err != nil {
-			return nil, zero, queryToolErr(ctx, err)
+			return nil, zero, t.queryToolErr(ctx, err)
 		}
-		out := shapeQueryOutput("instant", series, warns)
+		out := shapeQueryOutput("instant", series, warns, t.limits.MaxSeries)
 		return nil, out, nil
 
 	case "range":
@@ -100,24 +91,24 @@ func (t *toolset) queryMetrics(ctx context.Context, _ *mcp.CallToolRequest, in Q
 		if window <= 0 {
 			return nil, zero, fmt.Errorf("end (%s) must be after start (%s)", end.Format(time.RFC3339), start.Format(time.RFC3339))
 		}
-		if window > maxLookback {
-			return nil, zero, fmt.Errorf("window %s exceeds the %s lookback limit: shrink the range or aggregate with a recording-rule-style query", window.Round(time.Second), maxLookback)
+		if window > t.limits.MaxLookback {
+			return nil, zero, fmt.Errorf("window %s exceeds the %s lookback limit: shrink the range or aggregate with a recording-rule-style query", window.Round(time.Second), t.limits.MaxLookback)
 		}
 
-		step, coarsened, err := chooseStep(in.Step, window)
+		step, coarsened, err := chooseStep(in.Step, window, t.limits.MaxPointsPerSeries)
 		if err != nil {
 			return nil, zero, fmt.Errorf("invalid step: %v", err)
 		}
 
 		series, warns, err := t.prom.QueryRange(ctx, in.Query, start, end, step, upstreamTimeout)
 		if err != nil {
-			return nil, zero, queryToolErr(ctx, err)
+			return nil, zero, t.queryToolErr(ctx, err)
 		}
-		out := shapeQueryOutput("range", series, warns)
+		out := shapeQueryOutput("range", series, warns, t.limits.MaxSeries)
 		out.StepUsed = step.String()
 		if coarsened {
 			out.Hint = joinHints(out.Hint,
-				fmt.Sprintf("step coarsened to %s to keep points per series <= %d", step, maxPointsPerSeries))
+				fmt.Sprintf("step coarsened to %s to keep points per series <= %d", step, t.limits.MaxPointsPerSeries))
 		}
 		return nil, out, nil
 
@@ -128,9 +119,9 @@ func (t *toolset) queryMetrics(ctx context.Context, _ *mcp.CallToolRequest, in Q
 
 // queryToolErr distinguishes "our budget expired" from upstream errors,
 // because the fixes differ and the agent only sees the message.
-func queryToolErr(ctx context.Context, err error) error {
+func (t *toolset) queryToolErr(ctx context.Context, err error) error {
 	if errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
-		return fmt.Errorf("query exceeded the %s budget - narrow the selector, shrink the range, or aggregate", queryTimeout)
+		return fmt.Errorf("query exceeded the %s budget - narrow the selector, shrink the range, or aggregate", t.limits.QueryTimeout)
 	}
 	return fmt.Errorf("query failed: %v", err)
 }
@@ -155,8 +146,8 @@ func parseTimeOrOffset(s string, now time.Time) (time.Time, error) {
 // chooseStep returns the effective range step: the caller's, unless it would
 // exceed the points-per-series budget, in which case the minimum compliant
 // step (window/maxPoints, whole seconds). Omitted step = auto-compute.
-func chooseStep(requested string, window time.Duration) (step time.Duration, coarsened bool, err error) {
-	minStep := time.Duration(math.Ceil(window.Seconds()/maxPointsPerSeries)) * time.Second
+func chooseStep(requested string, window time.Duration, maxPoints int) (step time.Duration, coarsened bool, err error) {
+	minStep := time.Duration(math.Ceil(window.Seconds()/float64(maxPoints))) * time.Second
 	if minStep < time.Second {
 		minStep = time.Second
 	}
@@ -176,7 +167,7 @@ func chooseStep(requested string, window time.Duration) (step time.Duration, coa
 // shapeQueryOutput applies the series cap and drops non-finite values (JSON
 // cannot carry NaN/Inf), reporting both in hints - guardrails must be
 // visible, never silent.
-func shapeQueryOutput(mode string, series []promclient.Series, warns []string) QueryMetricsOutput {
+func shapeQueryOutput(mode string, series []promclient.Series, warns []string, maxSeries int) QueryMetricsOutput {
 	out := QueryMetricsOutput{Mode: mode, TotalSeries: len(series), Series: []QuerySeries{}}
 
 	if len(series) > maxSeries {

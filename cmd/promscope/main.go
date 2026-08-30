@@ -30,6 +30,7 @@ type config struct {
 	listenAddr    string
 	prometheusURL string
 	stateless     bool
+	limits        tools.Limits
 }
 
 // envOr returns the environment variable's value, or def if unset/empty.
@@ -57,17 +58,61 @@ func envBool(key string, def bool) bool {
 	return b
 }
 
+// envDuration and envInt follow the same fail-hard contract as envBool:
+// guardrails silently falling back to defaults would be worse than a crash.
+func envDuration(key string, def time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "promscope: %s=%q is not a duration (e.g. 30s, 24h)\n", key, v)
+		os.Exit(2)
+	}
+	return d
+}
+
+func envInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "promscope: %s=%q is not an integer\n", key, v)
+		os.Exit(2)
+	}
+	return n
+}
+
 func parseConfig() config {
 	var cfg config
+	def := tools.DefaultLimits()
 	flag.StringVar(&cfg.listenAddr, "listen",
 		envOr("PROMSCOPE_LISTEN_ADDR", ":8090"),
 		"HTTP listen address")
 	flag.StringVar(&cfg.prometheusURL, "prometheus-url",
 		envOr("PROMSCOPE_PROMETHEUS_URL", "http://localhost:9090"),
-		"Prometheus base URL (consumed from M2 on)")
+		"Prometheus base URL")
 	flag.BoolVar(&cfg.stateless, "stateless",
 		envBool("PROMSCOPE_STATELESS", true),
 		"run the MCP transport stateless (false exists solely for the M5 A/B experiment)")
+	flag.DurationVar(&cfg.limits.MaxLookback, "max-lookback",
+		envDuration("PROMSCOPE_MAX_LOOKBACK", def.MaxLookback),
+		"widest allowed range-query window")
+	flag.IntVar(&cfg.limits.MaxSeries, "max-series",
+		envInt("PROMSCOPE_MAX_SERIES", def.MaxSeries),
+		"series returned per query before truncation")
+	flag.IntVar(&cfg.limits.MaxPointsPerSeries, "max-points",
+		envInt("PROMSCOPE_MAX_POINTS", def.MaxPointsPerSeries),
+		"points per series budget for range queries")
+	flag.DurationVar(&cfg.limits.QueryTimeout, "query-timeout",
+		envDuration("PROMSCOPE_QUERY_TIMEOUT", def.QueryTimeout),
+		"outer per-query budget; Prometheus gets 90% of it")
+	flag.IntVar(&cfg.limits.MaxMetricNames, "max-metric-names",
+		envInt("PROMSCOPE_MAX_METRIC_NAMES", def.MaxMetricNames),
+		"list_metrics cap before truncation")
 	flag.Parse()
 	return cfg
 }
@@ -75,6 +120,11 @@ func parseConfig() config {
 func main() {
 	cfg := parseConfig()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	if err := cfg.limits.Validate(); err != nil {
+		logger.Error("invalid limits", "error", err)
+		os.Exit(2)
+	}
 
 	// The MCP server: promscope's identity in the initialize handshake.
 	server := mcp.NewServer(&mcp.Implementation{
@@ -91,7 +141,7 @@ func main() {
 		logger.Error("invalid -prometheus-url", "url", cfg.prometheusURL, "error", err)
 		os.Exit(2)
 	}
-	tools.Register(server, promClient)
+	tools.Register(server, promClient, cfg.limits)
 
 	// The getServer callback exists so multi-tenant deployments can choose a
 	// server per request; we always return the same one. Stateless mode gives
@@ -134,6 +184,7 @@ func main() {
 			"addr", cfg.listenAddr,
 			"stateless", cfg.stateless,
 			"prometheus_url", cfg.prometheusURL,
+			"limits", fmt.Sprintf("%+v", cfg.limits),
 			"version", version)
 		if err := httpServer.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err

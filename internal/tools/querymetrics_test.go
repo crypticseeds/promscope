@@ -41,7 +41,7 @@ func TestQueryMetricsValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ts := &toolset{prom: &fakeClient{querySeries: sampleSeries(1)}}
+			ts := newTestToolset(&fakeClient{querySeries: sampleSeries(1)})
 			_, _, err := ts.queryMetrics(context.Background(), nil, tt.in)
 			if err == nil {
 				t.Fatalf("want error containing %q, got nil", tt.wantErr)
@@ -55,7 +55,7 @@ func TestQueryMetricsValidation(t *testing.T) {
 
 func TestQueryMetricsInstant(t *testing.T) {
 	fake := &fakeClient{querySeries: sampleSeries(2)}
-	ts := &toolset{prom: fake}
+	ts := newTestToolset(fake)
 
 	_, out, err := ts.queryMetrics(context.Background(), nil, QueryMetricsInput{Query: "up"})
 	if err != nil {
@@ -77,7 +77,7 @@ func TestQueryMetricsInstant(t *testing.T) {
 
 func TestQueryMetricsStepAutoCompute(t *testing.T) {
 	fake := &fakeClient{querySeries: sampleSeries(1)}
-	ts := &toolset{prom: fake}
+	ts := newTestToolset(fake)
 
 	// 10h window / 200 points = 180s minimum step.
 	_, out, err := ts.queryMetrics(context.Background(), nil,
@@ -98,7 +98,7 @@ func TestQueryMetricsStepAutoCompute(t *testing.T) {
 
 func TestQueryMetricsStepCoarsened(t *testing.T) {
 	fake := &fakeClient{querySeries: sampleSeries(1)}
-	ts := &toolset{prom: fake}
+	ts := newTestToolset(fake)
 
 	// 1s step over 10h would be 36000 points/series; must coarsen to 180s
 	// and say so.
@@ -126,13 +126,14 @@ func TestQueryMetricsStepCoarsened(t *testing.T) {
 }
 
 func TestQueryMetricsSeriesTruncation(t *testing.T) {
-	ts := &toolset{prom: &fakeClient{querySeries: sampleSeries(maxSeries + 10)}}
+	lim := DefaultLimits()
+	ts := newTestToolset(&fakeClient{querySeries: sampleSeries(lim.MaxSeries + 10)})
 
 	_, out, err := ts.queryMetrics(context.Background(), nil, QueryMetricsInput{Query: "up"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !out.Truncated || len(out.Series) != maxSeries || out.TotalSeries != maxSeries+10 {
+	if !out.Truncated || len(out.Series) != lim.MaxSeries || out.TotalSeries != lim.MaxSeries+10 {
 		t.Errorf("truncation wrong: truncated=%v len=%d total=%d", out.Truncated, len(out.Series), out.TotalSeries)
 	}
 	if !strings.Contains(out.Hint, "aggregate") {
@@ -150,7 +151,7 @@ func TestQueryMetricsNonFiniteDropped(t *testing.T) {
 			{T: time.Unix(1724800045, 0), V: 2},
 		},
 	}}
-	ts := &toolset{prom: &fakeClient{querySeries: series}}
+	ts := newTestToolset(&fakeClient{querySeries: series})
 
 	_, out, err := ts.queryMetrics(context.Background(), nil, QueryMetricsInput{Query: "x/y"})
 	if err != nil {
@@ -165,10 +166,10 @@ func TestQueryMetricsNonFiniteDropped(t *testing.T) {
 }
 
 func TestQueryMetricsWarningsSurface(t *testing.T) {
-	ts := &toolset{prom: &fakeClient{
+	ts := newTestToolset(&fakeClient{
 		querySeries: sampleSeries(1),
 		queryWarns:  []string{"query would load too many samples"},
-	}}
+	})
 
 	_, out, err := ts.queryMetrics(context.Background(), nil, QueryMetricsInput{Query: "up"})
 	if err != nil {
@@ -180,7 +181,7 @@ func TestQueryMetricsWarningsSurface(t *testing.T) {
 }
 
 func TestQueryMetricsUpstreamError(t *testing.T) {
-	ts := &toolset{prom: &fakeClient{queryErr: fmt.Errorf(`parse error: unexpected ")"`)}}
+	ts := newTestToolset(&fakeClient{queryErr: fmt.Errorf(`parse error: unexpected ")"`)})
 
 	_, _, err := ts.queryMetrics(context.Background(), nil, QueryMetricsInput{Query: "up)"})
 	if err == nil {

@@ -54,6 +54,12 @@ func (f *fakeClient) QueryRange(_ context.Context, q string, start, end time.Tim
 	return f.querySeries, f.queryWarns, f.queryErr
 }
 
+// newTestToolset builds a toolset with the documented default limits - the
+// same ones production starts from, so tests exercise real guardrail math.
+func newTestToolset(f *fakeClient) *toolset {
+	return &toolset{prom: f, limits: DefaultLimits()}
+}
+
 func TestListMetrics(t *testing.T) {
 	baseNames := []string{"go_goroutines", "up", "vllm:gpu_cache_usage_perc", "vllm:num_requests_running"}
 	baseMeta := map[string]promclient.Meta{
@@ -101,7 +107,7 @@ func TestListMetrics(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ts := &toolset{prom: tt.client}
+			ts := newTestToolset(tt.client)
 			_, out, err := ts.listMetrics(context.Background(), nil, tt.in)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -128,11 +134,11 @@ func TestListMetrics(t *testing.T) {
 }
 
 func TestListMetricsEnrichment(t *testing.T) {
-	ts := &toolset{prom: &fakeClient{
+	ts := newTestToolset(&fakeClient{
 		// The Client contract says names arrive sorted; the fake honors it.
 		names: []string{"orphan_metric", "up"},
 		meta:  map[string]promclient.Meta{"up": {Type: "gauge", Help: "1 if the scrape succeeded"}},
-	}}
+	})
 
 	_, out, err := ts.listMetrics(context.Background(), nil, ListMetricsInput{})
 	if err != nil {
@@ -147,11 +153,12 @@ func TestListMetricsEnrichment(t *testing.T) {
 }
 
 func TestListMetricsTruncation(t *testing.T) {
-	many := make([]string, maxMetricNames+100)
+	lim := DefaultLimits()
+	many := make([]string, lim.MaxMetricNames+100)
 	for i := range many {
 		many[i] = fmt.Sprintf("metric_%04d", i)
 	}
-	ts := &toolset{prom: &fakeClient{names: many}}
+	ts := newTestToolset(&fakeClient{names: many})
 
 	_, out, err := ts.listMetrics(context.Background(), nil, ListMetricsInput{})
 	if err != nil {
@@ -160,11 +167,11 @@ func TestListMetricsTruncation(t *testing.T) {
 	if !out.Truncated {
 		t.Error("Truncated = false, want true")
 	}
-	if len(out.Metrics) != maxMetricNames {
-		t.Errorf("returned %d metrics, want cap %d", len(out.Metrics), maxMetricNames)
+	if len(out.Metrics) != lim.MaxMetricNames {
+		t.Errorf("returned %d metrics, want cap %d", len(out.Metrics), lim.MaxMetricNames)
 	}
-	if out.Total != maxMetricNames+100 {
-		t.Errorf("Total = %d, want %d", out.Total, maxMetricNames+100)
+	if out.Total != lim.MaxMetricNames+100 {
+		t.Errorf("Total = %d, want %d", out.Total, lim.MaxMetricNames+100)
 	}
 	if !strings.Contains(out.Hint, "narrower filter") {
 		t.Errorf("Hint = %q, want truncation guidance", out.Hint)
@@ -172,7 +179,7 @@ func TestListMetricsTruncation(t *testing.T) {
 }
 
 func TestListMetricsUpstreamError(t *testing.T) {
-	ts := &toolset{prom: &fakeClient{namesErr: fmt.Errorf("connection refused")}}
+	ts := newTestToolset(&fakeClient{namesErr: fmt.Errorf("connection refused")})
 
 	_, _, err := ts.listMetrics(context.Background(), nil, ListMetricsInput{})
 	if err == nil {

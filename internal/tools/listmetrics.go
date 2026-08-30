@@ -63,10 +63,11 @@ func (t *toolset) listMetrics(ctx context.Context, _ *mcp.CallToolRequest, in Li
 	if len(matches) == 0 && in.Filter != "" {
 		hints = append(hints, fmt.Sprintf("no metric names contain %q - try a broader filter or omit it", in.Filter))
 	}
-	if len(matches) > maxMetricNames {
-		matches = matches[:maxMetricNames]
+	if len(matches) > t.limits.MaxMetricNames {
+		total := out.Total
+		matches = matches[:t.limits.MaxMetricNames]
 		out.Truncated = true
-		hints = append(hints, fmt.Sprintf("showing %d of %d matches - pass a narrower filter", maxMetricNames, out.Total))
+		hints = append(hints, fmt.Sprintf("showing %d of %d matches - pass a narrower filter", t.limits.MaxMetricNames, total))
 	}
 
 	// Metadata enrichment (D6) degrades gracefully: names alone are still

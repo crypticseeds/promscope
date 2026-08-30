@@ -3,24 +3,58 @@
 package tools
 
 import (
+	"fmt"
+	"time"
+
 	"github.com/crypticseeds/promscope/internal/promclient"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// maxMetricNames caps list_metrics output (SPEC section 4, guardrails).
-// LLM context windows are the scarce resource; past this point the fix is a
-// narrower filter, not more output.
-const maxMetricNames = 500
+// Limits are the server-side guardrails (SPEC section 4). They exist to
+// protect the agent's context window and the upstream Prometheus - never
+// trusted to the model, always reported when they bite.
+type Limits struct {
+	MaxLookback        time.Duration // widest allowed range-query window
+	MaxSeries          int           // series returned per query before truncation
+	MaxPointsPerSeries int           // drives range-step auto-compute/coarsening
+	QueryTimeout       time.Duration // outer per-call budget; upstream gets 90%
+	MaxMetricNames     int           // list_metrics cap before truncation
+}
+
+// DefaultLimits are the documented, tested defaults.
+func DefaultLimits() Limits {
+	return Limits{
+		MaxLookback:        24 * time.Hour,
+		MaxSeries:          50,
+		MaxPointsPerSeries: 200,
+		QueryTimeout:       10 * time.Second,
+		MaxMetricNames:     500,
+	}
+}
+
+// Validate rejects nonsense before it can corrupt guardrail math (a zero
+// MaxPointsPerSeries would divide by zero in step auto-compute).
+func (l Limits) Validate() error {
+	if l.MaxLookback <= 0 || l.MaxSeries <= 0 || l.MaxPointsPerSeries <= 0 || l.MaxMetricNames <= 0 {
+		return fmt.Errorf("all limits must be positive: %+v", l)
+	}
+	if l.QueryTimeout < time.Second {
+		return fmt.Errorf("query timeout %s is below the 1s floor", l.QueryTimeout)
+	}
+	return nil
+}
 
 // toolset carries the shared dependencies of all tool handlers.
 type toolset struct {
-	prom promclient.Client
+	prom   promclient.Client
+	limits Limits
 }
 
 // Register wires every promscope tool onto server. It is this package's only
-// entry point: main stays ignorant of individual tools.
-func Register(server *mcp.Server, prom promclient.Client) {
-	ts := &toolset{prom: prom}
+// entry point: main stays ignorant of individual tools. Limits must have
+// been validated by the caller.
+func Register(server *mcp.Server, prom promclient.Client, limits Limits) {
+	ts := &toolset{prom: prom, limits: limits}
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "list_metrics",

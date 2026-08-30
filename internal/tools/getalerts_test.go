@@ -69,7 +69,7 @@ func TestGetAlerts(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ts := &toolset{prom: tt.client}
+			ts := newTestToolset(tt.client)
 			_, out, err := ts.getAlerts(context.Background(), nil, tt.in)
 
 			if tt.wantErr != "" {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/crypticseeds/promscope/internal/promclient"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -35,6 +36,14 @@ type ListMetricsOutput struct {
 
 func (t *toolset) listMetrics(ctx context.Context, _ *mcp.CallToolRequest, in ListMetricsInput) (*mcp.CallToolResult, ListMetricsOutput, error) {
 	var zero ListMetricsOutput
+
+	ctx, cancel := t.withBudget(ctx)
+	defer cancel()
+	release, err := t.acquire(ctx)
+	if err != nil {
+		return nil, zero, err
+	}
+	defer release()
 
 	names, err := t.prom.MetricNames(ctx)
 	if err != nil {
@@ -72,9 +81,14 @@ func (t *toolset) listMetrics(ctx context.Context, _ *mcp.CallToolRequest, in Li
 
 	// Metadata enrichment (D6) degrades gracefully: names alone are still
 	// useful, so a metadata failure is a note in the hint, not an error.
-	meta, mdErr := t.prom.Metadata(ctx)
-	if mdErr != nil {
-		hints = append(hints, "metric type/help omitted: metadata endpoint failed")
+	// Zero matches skip the upstream call entirely - nothing to enrich.
+	var meta map[string]promclient.Meta
+	if len(matches) > 0 {
+		var mdErr error
+		meta, mdErr = t.prom.Metadata(ctx)
+		if mdErr != nil {
+			hints = append(hints, "metric type/help omitted: metadata endpoint failed")
+		}
 	}
 
 	out.Metrics = make([]MetricInfo, len(matches))

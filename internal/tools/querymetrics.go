@@ -22,7 +22,9 @@ type QueryMetricsInput struct {
 	Step  string `json:"step,omitempty" jsonschema:"range mode only: duration like 30s; omit to auto-compute; coarsened if it would exceed the points budget"`
 }
 
-// QueryPoint is one sample.
+// QueryPoint is one sample. T truncates to whole seconds (RFC3339 without
+// fractions): range steps are >= 1s so nothing collides, and instant queries
+// return a single point where ms precision buys the agent nothing.
 type QueryPoint struct {
 	T string  `json:"t" jsonschema:"RFC3339 timestamp"`
 	V float64 `json:"v"`
@@ -51,13 +53,22 @@ func (t *toolset) queryMetrics(ctx context.Context, _ *mcp.CallToolRequest, in Q
 	if strings.TrimSpace(in.Query) == "" {
 		return nil, zero, fmt.Errorf("query is required: a PromQL expression, e.g. up or rate(prometheus_http_requests_total[5m])")
 	}
+	if len(in.Query) > maxQueryChars {
+		return nil, zero, fmt.Errorf("query is %d characters; the limit is %d - a query this large is almost never intentional", len(in.Query), maxQueryChars)
+	}
 
-	// The outer budget. The upstream timeout param is 90% of it, so
-	// Prometheus gives up first and we relay its clean error instead of a
-	// raw context deadline (SPEC section 4).
-	ctx, cancel := context.WithTimeout(ctx, t.limits.QueryTimeout)
+	// The budget: the upstream timeout param is 90% of it, so Prometheus
+	// gives up first and we relay its clean error instead of a raw context
+	// deadline (SPEC section 4).
+	ctx, cancel := t.withBudget(ctx)
 	defer cancel()
 	upstreamTimeout := t.limits.QueryTimeout * 9 / 10
+
+	release, err := t.acquire(ctx)
+	if err != nil {
+		return nil, zero, err
+	}
+	defer release()
 
 	now := time.Now()
 
@@ -126,13 +137,23 @@ func (t *toolset) queryMetrics(ctx context.Context, _ *mcp.CallToolRequest, in Q
 	}
 }
 
-// queryToolErr distinguishes "our budget expired" from upstream errors,
-// because the fixes differ and the agent only sees the message.
+// maxQueryChars is a sanity bound on the PromQL string itself - not a
+// guardrail against expensive queries (that is Prometheus's job, see SPEC
+// section 4), just a refusal to ship pathological payloads upstream.
+const maxQueryChars = 4096
+
+// queryToolErr maps failure causes to messages the agent can act on. The
+// three cases genuinely differ: client gone (nothing to say, but logs read
+// it), budget expired (fix: cheaper query), upstream error (relay detail).
 func (t *toolset) queryToolErr(ctx context.Context, err error) error {
-	if errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+	switch {
+	case errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
+		return fmt.Errorf("query canceled by the client before it completed")
+	case errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return fmt.Errorf("query exceeded the %s budget - narrow the selector, shrink the range, or aggregate", t.limits.QueryTimeout)
+	default:
+		return fmt.Errorf("query failed: %v", err)
 	}
-	return fmt.Errorf("query failed: %v", err)
 }
 
 // parseTimeOrOffset accepts RFC3339 ("2026-08-30T12:00:00Z") or a negative

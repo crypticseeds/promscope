@@ -40,6 +40,14 @@ type rulesDocJSON struct {
 }
 
 func (t *toolset) readRules(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+	ctx, cancel := t.withBudget(ctx)
+	defer cancel()
+	release, err := t.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
 	groups, err := t.prom.Rules(ctx)
 	if err != nil {
 		// Resources have no isError channel; a protocol error with an

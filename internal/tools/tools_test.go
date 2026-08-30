@@ -20,6 +20,7 @@ func TestLimitsValidate(t *testing.T) {
 	}{
 		{"defaults are valid", DefaultLimits(), ""},
 		{"zero series", mod(func(l *Limits) { l.MaxSeries = 0 }), "positive"},
+		{"zero inflight", mod(func(l *Limits) { l.MaxInflight = 0 }), "positive"},
 		{"negative lookback", mod(func(l *Limits) { l.MaxLookback = -time.Hour }), "positive"},
 		{"one point per series", mod(func(l *Limits) { l.MaxPointsPerSeries = 1 }), "at least 2"},
 		{"sub-second timeout", mod(func(l *Limits) { l.QueryTimeout = 500 * time.Millisecond }), "1s floor"},

@@ -101,3 +101,17 @@ func TestGetAlerts(t *testing.T) {
 		})
 	}
 }
+
+func TestGetAlertsZeroActiveAtOmitted(t *testing.T) {
+	ts := newTestToolset(&fakeClient{alerts: []promclient.Alert{
+		{Name: "NoTimestamp", State: "firing"}, // zero ActiveAt
+	}})
+
+	_, out, err := ts.getAlerts(context.Background(), nil, GetAlertsInput{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Alerts[0].ActiveAt != "" {
+		t.Errorf("zero ActiveAt must serialize empty (omitempty), got %q", out.Alerts[0].ActiveAt)
+	}
+}

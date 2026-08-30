@@ -3,6 +3,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -17,8 +18,9 @@ type Limits struct {
 	MaxLookback        time.Duration // widest allowed range-query window
 	MaxSeries          int           // series returned per query before truncation
 	MaxPointsPerSeries int           // drives range-step auto-compute/coarsening
-	QueryTimeout       time.Duration // outer per-call budget; upstream gets 90%
+	QueryTimeout       time.Duration // per-call budget for every tool/resource
 	MaxMetricNames     int           // list_metrics cap before truncation
+	MaxInflight        int           // concurrent upstream Prometheus requests
 }
 
 // DefaultLimits are the documented, tested defaults.
@@ -29,12 +31,13 @@ func DefaultLimits() Limits {
 		MaxPointsPerSeries: 200,
 		QueryTimeout:       10 * time.Second,
 		MaxMetricNames:     500,
+		MaxInflight:        10,
 	}
 }
 
 // Validate rejects nonsense before it can corrupt guardrail math.
 func (l Limits) Validate() error {
-	if l.MaxLookback <= 0 || l.MaxSeries <= 0 || l.MaxMetricNames <= 0 {
+	if l.MaxLookback <= 0 || l.MaxSeries <= 0 || l.MaxMetricNames <= 0 || l.MaxInflight <= 0 {
 		return fmt.Errorf("all limits must be positive: %+v", l)
 	}
 	if l.MaxPointsPerSeries < 2 {
@@ -50,13 +53,35 @@ func (l Limits) Validate() error {
 type toolset struct {
 	prom   promclient.Client
 	limits Limits
+	sem    chan struct{} // bounds concurrent upstream work (SPEC section 4)
+}
+
+// withBudget applies the per-request time budget. Every tool and resource
+// handler must run inside it: client_golang's default transport has no
+// overall deadline, so without this a stalled Prometheus pins a goroutine
+// until the client gives up - a guardrail we refuse to delegate to the model.
+func (t *toolset) withBudget(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, t.limits.QueryTimeout)
+}
+
+// acquire takes an upstream slot, waiting at most for the caller's budget.
+// An unauthenticated caller can be arbitrarily concurrent; Prometheus's
+// query capacity is finite. The wait is bounded by ctx, so saturation
+// surfaces as a clear, retryable error instead of a pile-up.
+func (t *toolset) acquire(ctx context.Context) (release func(), err error) {
+	select {
+	case t.sem <- struct{}{}:
+		return func() { <-t.sem }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("server at capacity (%d concurrent upstream requests) - retry shortly", cap(t.sem))
+	}
 }
 
 // Register wires every promscope tool onto server. It is this package's only
 // entry point: main stays ignorant of individual tools. Limits must have
 // been validated by the caller.
 func Register(server *mcp.Server, prom promclient.Client, limits Limits) {
-	ts := &toolset{prom: prom, limits: limits}
+	ts := &toolset{prom: prom, limits: limits, sem: make(chan struct{}, limits.MaxInflight)}
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "list_metrics",

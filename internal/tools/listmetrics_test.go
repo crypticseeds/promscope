@@ -27,6 +27,11 @@ type fakeClient struct {
 	queryWarns  []string
 	queryErr    error
 
+	// block, when non-nil, stalls MetricNames and Query until the channel
+	// closes or the caller's context expires - simulates a hung Prometheus
+	// for the budget and concurrency tests.
+	block chan struct{}
+
 	// recorded by Query/QueryRange for assertions
 	lastQuery   string
 	lastStart   time.Time
@@ -35,7 +40,22 @@ type fakeClient struct {
 	lastTimeout time.Duration
 }
 
-func (f *fakeClient) MetricNames(context.Context) ([]string, error) {
+func (f *fakeClient) stall(ctx context.Context) error {
+	if f.block == nil {
+		return nil
+	}
+	select {
+	case <-f.block:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (f *fakeClient) MetricNames(ctx context.Context) ([]string, error) {
+	if err := f.stall(ctx); err != nil {
+		return nil, err
+	}
 	return f.names, f.namesErr
 }
 
@@ -51,8 +71,11 @@ func (f *fakeClient) Rules(context.Context) ([]promclient.RuleGroup, error) {
 	return f.ruleGroups, f.rulesErr
 }
 
-func (f *fakeClient) Query(_ context.Context, q string, _ time.Time, timeout time.Duration) ([]promclient.Series, []string, error) {
+func (f *fakeClient) Query(ctx context.Context, q string, _ time.Time, timeout time.Duration) ([]promclient.Series, []string, error) {
 	f.lastQuery, f.lastTimeout = q, timeout
+	if err := f.stall(ctx); err != nil {
+		return nil, nil, err
+	}
 	return f.querySeries, f.queryWarns, f.queryErr
 }
 
@@ -62,9 +85,11 @@ func (f *fakeClient) QueryRange(_ context.Context, q string, start, end time.Tim
 }
 
 // newTestToolset builds a toolset with the documented default limits - the
-// same ones production starts from, so tests exercise real guardrail math.
+// same ones production starts from, so tests exercise real guardrail math
+// (including the inflight semaphore, which must exist or acquire blocks).
 func newTestToolset(f *fakeClient) *toolset {
-	return &toolset{prom: f, limits: DefaultLimits()}
+	lim := DefaultLimits()
+	return &toolset{prom: f, limits: lim, sem: make(chan struct{}, lim.MaxInflight)}
 }
 
 func TestListMetrics(t *testing.T) {

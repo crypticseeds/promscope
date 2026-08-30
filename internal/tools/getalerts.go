@@ -38,6 +38,14 @@ func (t *toolset) getAlerts(ctx context.Context, _ *mcp.CallToolRequest, in GetA
 		return nil, zero, fmt.Errorf("invalid state %q: use \"firing\", \"pending\", or omit for both", in.State)
 	}
 
+	ctx, cancel := t.withBudget(ctx)
+	defer cancel()
+	release, err := t.acquire(ctx)
+	if err != nil {
+		return nil, zero, err
+	}
+	defer release()
+
 	alerts, err := t.prom.Alerts(ctx)
 	if err != nil {
 		return nil, zero, fmt.Errorf("fetching alerts failed: %v - check that Prometheus is reachable (PROMSCOPE_PROMETHEUS_URL)", err)
@@ -53,7 +61,7 @@ func (t *toolset) getAlerts(ctx context.Context, _ *mcp.CallToolRequest, in GetA
 			State:       a.State,
 			Labels:      a.Labels,
 			Annotations: a.Annotations,
-			ActiveAt:    a.ActiveAt.Format(time.RFC3339),
+			ActiveAt:    formatOptionalTime(a.ActiveAt),
 			Value:       a.Value,
 		})
 	}
@@ -65,4 +73,13 @@ func (t *toolset) getAlerts(ctx context.Context, _ *mcp.CallToolRequest, in GetA
 		out.Hint = "no active alerts - either everything is healthy or no alert rules are configured (read prometheus://rules to check)"
 	}
 	return nil, out, nil
+}
+
+// formatOptionalTime returns "" for a zero time so json omitempty drops the
+// field, instead of emitting the misleading "0001-01-01T00:00:00Z".
+func formatOptionalTime(ts time.Time) string {
+	if ts.IsZero() {
+		return ""
+	}
+	return ts.Format(time.RFC3339)
 }

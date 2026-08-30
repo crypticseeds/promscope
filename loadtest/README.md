@@ -31,16 +31,21 @@ docker run --rm -i --network promscope_default \
 **Setup:** 2 replicas, nginx round-robin, identical `agent-turn.js`
 (10 VUs, 60s); only `PROMSCOPE_STATELESS` differs.
 
-| Metric | Stateless | Stateful |
+**Read this table correctly: promscope ships stateless and produced ZERO
+failures.** The 49.33% column is the *rejected alternative* - stateful mode
+exists only behind a test flag so its failure mode could be measured. It is
+the configuration promscope exists to avoid.
+
+| Metric | promscope as shipped (stateless) | Rejected alternative (stateful flag) |
 |---|---|---|
-| `session_not_found` (404s) | **0.00%** | **49.33%** |
-| `agent_turn_failures` | **0.00%** | **34.66%** |
+| `session_not_found` (404s) | **0.00%** | 49.33% |
+| `agent_turn_failures` | **0.00%** | 34.66% |
 | p95 latency | 13.1ms | 9.7ms |
 
-Theoretical failure rate for 2-replica round-robin is 50%; measured 49.33%.
-The stateful run's *better* p95 is the trap worth naming: failing fast with
-a 404 is cheaper than querying Prometheus. Never read latency without its
-error rate.
+Theoretical failure rate for stateful mode behind 2-replica round-robin is
+50%; measured 49.33%. The stateful run's *better* p95 is the trap worth
+naming: failing fast with a 404 is cheaper than querying Prometheus. Never
+read latency without its error rate.
 
 ## H2 - Scaling: does a second replica buy throughput?
 
@@ -67,8 +72,8 @@ with `SessionTimeout: 30m`, so nothing is reaped inside the window.
 
 | Mode | Sessions created | Replica A RSS | Replica B RSS |
 |---|---|---|---|
-| Stateful | 98,433 | 8.1 -> **802.2 MiB** | 14.0 -> **800.2 MiB** |
-| Stateless | 74,911 iterations | 7.4 -> 8.8 MiB | 5.3 -> 8.6 MiB |
+| Rejected alternative (stateful flag) | 98,433 | 8.1 -> 802.2 MiB | 14.0 -> 800.2 MiB |
+| **promscope as shipped (stateless)** | 74,911 iterations | **7.4 -> 8.8 MiB** | **5.3 -> 8.6 MiB** |
 
 ~8 KiB retained per stranded session, growing linearly: two minutes of
 unauthenticated traffic held ~1.6 GB across the pair. Stateless stayed flat

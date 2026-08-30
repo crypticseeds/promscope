@@ -88,6 +88,19 @@ the migration path. In the Go SDK this is `StreamableHTTPHandler{Stateless: true
   notifications need a session and are **out** - this repo documents exactly where that
   boundary is
 
+**Measured, not asserted** (full methodology and data in
+[`loadtest/README.md`](loadtest/README.md)):
+
+- promscope as shipped (stateless): **0.00% failures** behind 2-replica
+  round-robin, flat ~8 MiB memory under session churn
+- the rejected stateful alternative (kept behind a test flag for the A/B):
+  **49.33% request failures** in the identical setup, and ~800 MiB per
+  replica leaked in 120s of churn
+- adding a replica changed throughput by only +4.5% - promscope was never
+  the bottleneck (the shared Prometheus is), which is the honest half of the
+  scaling story: stateless makes scale-out *safe*; only your bottleneck
+  makes it *useful*
+
 ## Quickstart
 
 ```bash
@@ -109,6 +122,49 @@ development without Docker: `go run ./cmd/promscope` against any Prometheus.
 
 Operational endpoints on each replica: `/healthz` (liveness) and `/metrics`
 (promscope's own request counts, latencies, and upstream call outcomes).
+
+## What it looks like to an agent
+
+Point any MCP client at the stack - for example, in an
+[opencode](https://opencode.ai) project:
+
+```json
+{
+  "mcp": {
+    "promscope": { "type": "remote", "url": "http://localhost:8090/mcp" }
+  }
+}
+```
+
+Then ask it to do actual SRE work. Real transcript against this repo's demo
+stack (five tool calls, verdict verbatim):
+
+```text
+> Diagnose current inference health: p95 TTFT, 15-min trend,
+  KV-cache pressure, active alerts.
+
+⚙ promscope_list_metrics  {"filter":"vllm"}
+⚙ promscope_get_alerts
+⚙ promscope_query_metrics {"query":"histogram_quantile(0.95,
+    sum by (le) (rate(vllm:time_to_first_token_seconds_bucket[5m])))"}
+⚙ promscope_query_metrics {..., "mode":"range", "start":"-15m"}
+⚙ promscope_query_metrics {"query":"vllm:gpu_cache_usage_perc"}
+
+Verdict:
+- Inference fleet is healthy: p95 TTFT is 0.539s, within the 0.47-0.62s
+  band seen over the last 15 minutes.
+- KV-cache at 40.5% leaves ample GPU memory headroom; no queueing or
+  saturation signals.
+- The only firing alert is the informational AlwaysFiring demo - no action
+  needed, though the recent TTFT uptick (0.466 -> 0.539s) is worth a
+  re-check in 10-15 min.
+```
+
+Note the shape: the agent *discovered* metric names before querying
+(list_metrics is designed for that), used a relative-time range query, and
+correctly identified the demo alert as non-actionable from its annotations -
+each an ergonomics decision this server makes on purpose. The conversation
+round-robined across both stateless replicas mid-diagnosis; nothing noticed.
 
 ## Configuration
 

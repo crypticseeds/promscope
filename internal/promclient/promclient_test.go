@@ -310,3 +310,64 @@ func TestContextCancellationPropagates(t *testing.T) {
 		t.Fatalf("client ignored context: returned after %v", elapsed)
 	}
 }
+
+// TestQueryResponseCapBoundary pins the fencepost fixed in the review: a
+// body of EXACTLY the cap passes regardless of read chunking; one byte over
+// fails. Guardrail boundaries are exact in this project.
+func TestQueryResponseCapBoundary(t *testing.T) {
+	// A valid empty-vector response padded with trailing spaces (legal
+	// around JSON) to hit an exact byte size.
+	base := `{"status":"success","data":{"resultType":"vector","result":[]}}`
+	makeBody := func(size int) string {
+		return base + strings.Repeat(" ", size-len(base))
+	}
+
+	tests := []struct {
+		name    string
+		cap     int64
+		size    int
+		wantErr bool
+	}{
+		{"exactly at cap passes", 512, 512, false},
+		{"one byte over fails", 512, 513, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(makeBody(tt.size)))
+			}))
+			t.Cleanup(srv.Close)
+			c, err := New(srv.URL, tt.cap)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			_, _, err = c.Query(context.Background(), "up", time.Now(), 9*time.Second)
+			if tt.wantErr && (err == nil || !strings.Contains(err.Error(), "cap")) {
+				t.Fatalf("want cap error, got: %v", err)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("exact-cap body must pass, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestAlertsDeterministicTiebreak pins the label-set tiebreaker: identical
+// alertname across instances (the common case) must still order stably.
+func TestAlertsDeterministicTiebreak(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"success","data":{"alerts":[
+			{"labels":{"alertname":"HighTTFT","instance":"b"},"annotations":{},"state":"firing","activeAt":"2026-08-30T18:00:00Z","value":"1"},
+			{"labels":{"alertname":"HighTTFT","instance":"a"},"annotations":{},"state":"firing","activeAt":"2026-08-30T18:00:00Z","value":"1"}
+		]}}`))
+	})
+	got, err := c.Alerts(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got[0].Labels["instance"] != "a" || got[1].Labels["instance"] != "b" {
+		t.Errorf("tie not broken by label set: %v then %v", got[0].Labels, got[1].Labels)
+	}
+}

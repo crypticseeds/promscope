@@ -55,10 +55,10 @@ type Series struct {
 
 // Rule is one alerting or recording rule.
 type Rule struct {
-	Kind        string            // alerting | recording
+	Kind        string // alerting | recording
 	Name        string
-	Query       string            // the PromQL expression the rule evaluates
-	For         time.Duration     // alerting only: how long the condition must hold
+	Query       string        // the PromQL expression the rule evaluates
+	For         time.Duration // alerting only: how long the condition must hold
 	Labels      map[string]string
 	Annotations map[string]string // alerting only
 	Health      string            // ok | err | unknown
@@ -132,24 +132,30 @@ func (l limitRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	if err != nil {
 		return nil, err
 	}
-	resp.Body = &cappedBody{rc: resp.Body, remaining: l.max}
+	resp.Body = &cappedBody{rc: resp.Body, max: l.max}
 	return resp, nil
 }
 
+// cappedBody errors only when the body EXCEEDS max: a body of exactly max
+// bytes must pass regardless of read chunking (guardrail boundaries are
+// exact in this project - cf. chooseStep's fencepost).
 type cappedBody struct {
-	rc        io.ReadCloser
-	remaining int64
+	rc   io.ReadCloser
+	max  int64
+	read int64
 }
 
 func (c *cappedBody) Read(p []byte) (int, error) {
-	if c.remaining <= 0 {
+	if c.read > c.max {
 		return 0, errBodyTooLarge
 	}
-	if int64(len(p)) > c.remaining {
-		p = p[:c.remaining]
-	}
 	n, err := c.rc.Read(p)
-	c.remaining -= int64(n)
+	c.read += int64(n)
+	if c.read > c.max {
+		// The chunk that crossed the cap is withheld entirely: handing the
+		// decoder a partial over-cap chunk buys nothing.
+		return 0, errBodyTooLarge
+	}
 	return n, err
 }
 
@@ -178,13 +184,25 @@ func New(baseURL string, maxResponseBytes int64) (*HTTP, error) {
 	return &HTTP{api: promv1.NewAPI(c), maxBytes: maxResponseBytes}, nil
 }
 
+// wrapErr maps upstream failures to actionable messages for the four
+// non-query operations. The byte cap gets its own advice: without it the
+// tool layer's generic "is Prometheus reachable" hint would be wrong - e.g.
+// /api/v1/metadata on a large fleet can legitimately exceed the cap, and the
+// fix is raising PROMSCOPE_MAX_RESPONSE_BYTES, not checking connectivity.
+func (h *HTTP) wrapErr(op string, err error) error {
+	if tooLarge(err) {
+		return fmt.Errorf("promclient: %s: response exceeded the %d-byte cap - raise PROMSCOPE_MAX_RESPONSE_BYTES if this Prometheus is legitimately that large", op, h.maxBytes)
+	}
+	return fmt.Errorf("promclient: %s: %w", op, err)
+}
+
 func (h *HTTP) MetricNames(ctx context.Context) ([]string, error) {
 	// __name__ is the reserved label whose values are the metric names
 	// themselves. Zero time bounds mean "no time restriction". Warnings are
 	// deliberately dropped: a warning-bearing name list is still useful.
 	vals, _, err := h.api.LabelValues(ctx, "__name__", nil, time.Time{}, time.Time{})
 	if err != nil {
-		return nil, fmt.Errorf("promclient: metric names: %w", err)
+		return nil, h.wrapErr("metric names", err)
 	}
 	names := make([]string, len(vals))
 	for i, v := range vals {
@@ -200,7 +218,7 @@ func (h *HTTP) Metadata(ctx context.Context) (map[string]Meta, error) {
 	// metric's metadata; we take the first entry - good enough for hints.
 	md, err := h.api.Metadata(ctx, "", "")
 	if err != nil {
-		return nil, fmt.Errorf("promclient: metadata: %w", err)
+		return nil, h.wrapErr("metadata", err)
 	}
 	out := make(map[string]Meta, len(md))
 	for name, entries := range md {
@@ -215,7 +233,7 @@ func (h *HTTP) Metadata(ctx context.Context) (map[string]Meta, error) {
 func (h *HTTP) Alerts(ctx context.Context) ([]Alert, error) {
 	res, err := h.api.Alerts(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("promclient: alerts: %w", err)
+		return nil, h.wrapErr("alerts", err)
 	}
 	out := make([]Alert, len(res.Alerts))
 	for i, a := range res.Alerts {
@@ -228,13 +246,17 @@ func (h *HTTP) Alerts(ctx context.Context) ([]Alert, error) {
 			Value:       a.Value,
 		}
 	}
-	// Deterministic order: firing before pending, then by name. Stable
-	// output keeps tests simple and agent prompt caches warm.
+	// Deterministic order: firing before pending, then by name, then by the
+	// full label set - alerts commonly share a name across instances, and
+	// without the final tiebreaker the promised determinism was a lie.
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].State != out[j].State {
 			return out[i].State == "firing"
 		}
-		return out[i].Name < out[j].Name
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return labelsKey(out[i].Labels) < labelsKey(out[j].Labels)
 	})
 	return out, nil
 }
@@ -250,7 +272,7 @@ func labelSetToMap(ls model.LabelSet) map[string]string {
 func (h *HTTP) Rules(ctx context.Context) ([]RuleGroup, error) {
 	res, err := h.api.Rules(ctx, nil) // nil matchers = all rule groups
 	if err != nil {
-		return nil, fmt.Errorf("promclient: rules: %w", err)
+		return nil, h.wrapErr("rules", err)
 	}
 	groups := make([]RuleGroup, len(res.Groups))
 	for i, g := range res.Groups {

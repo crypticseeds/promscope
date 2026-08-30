@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -38,12 +39,26 @@ type config struct {
 }
 
 // envOr returns the environment variable's value, or def if unset/empty.
-// Precedence: flag > env > default.
+// Precedence: flag > env > default. One deliberate sharp edge: a MALFORMED
+// env value refuses to boot even when a flag overrides it - broken env
+// deserves fixing, not shadowing.
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
 	return def
+}
+
+// redactURL renders a URL safe for logs: userinfo and query are dropped.
+// Operators put credentials in URLs whether you want them to or not.
+func redactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "unparseable-url"
+	}
+	u.User = nil
+	u.RawQuery = ""
+	return u.String()
 }
 
 // envBool is envOr for booleans. A malformed value is a hard error, not a
@@ -117,6 +132,9 @@ func parseConfig() config {
 	flag.IntVar(&cfg.limits.MaxMetricNames, "max-metric-names",
 		envInt("PROMSCOPE_MAX_METRIC_NAMES", def.MaxMetricNames),
 		"list_metrics cap before truncation")
+	flag.IntVar(&cfg.limits.MaxInflight, "max-inflight",
+		envInt("PROMSCOPE_MAX_INFLIGHT", def.MaxInflight),
+		"concurrent upstream Prometheus requests before callers get a retryable overload error")
 	flag.IntVar(&cfg.maxResponseBytes, "max-response-bytes",
 		envInt("PROMSCOPE_MAX_RESPONSE_BYTES", promclient.DefaultMaxResponseBytes),
 		"cap on any Prometheus response body in bytes")
@@ -167,7 +185,9 @@ func main() {
 
 	promClient, err := promclient.New(cfg.prometheusURL, int64(cfg.maxResponseBytes))
 	if err != nil {
-		logger.Error("invalid prometheus client config", "url", cfg.prometheusURL, "error", err)
+		// Never log the raw URL: userinfo credentials belong in neither
+		// logs nor shell history, even when the URL is broken.
+		logger.Error("invalid prometheus client config", "url", redactURL(cfg.prometheusURL), "error", err)
 		os.Exit(2)
 	}
 	tools.Register(mcpServer, obs.WrapClient(promClient), cfg.limits)
@@ -182,9 +202,14 @@ func main() {
 			Stateless: cfg.stateless,
 			Logger:    logger,
 			// Client gone == answer undeliverable == stop working. This is
-			// what will cancel in-flight Prometheus queries in M2 when the
-			// agent disconnects mid-call.
+			// what cancels in-flight Prometheus queries when the agent
+			// disconnects mid-call.
 			PropagateRequestCancellation: true,
+			// Only meaningful in the stateful A/B configuration: without it
+			// idle sessions live forever, which is an unauthenticated
+			// memory-exhaustion path. When the M5 experiment measures
+			// retention itself, restart the stack between runs.
+			SessionTimeout: 30 * time.Minute,
 		},
 	)
 
@@ -194,9 +219,13 @@ func main() {
 	httpServer := &http.Server{
 		Addr:    cfg.listenAddr,
 		Handler: obs.Handler(mcpHandler),
-		// Slowloris protection. No WriteTimeout: it would sever long-lived
-		// SSE responses in the stateful configuration.
+		// Slowloris protection on headers AND body: the SDK caps request
+		// bodies at 4 MiB by size, but only a read deadline caps them by
+		// time - without it a client can drip bytes forever. No
+		// WriteTimeout: it would sever long-lived SSE responses in the
+		// stateful configuration.
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       60 * time.Second,
 	}
 
 	// Graceful shutdown: SIGINT/SIGTERM stops accepting connections and lets
@@ -209,7 +238,7 @@ func main() {
 		logger.Info("promscope listening",
 			"addr", cfg.listenAddr,
 			"stateless", cfg.stateless,
-			"prometheus_url", cfg.prometheusURL,
+			"prometheus_url", redactURL(cfg.prometheusURL),
 			"limits", fmt.Sprintf("%+v", cfg.limits),
 			"max_response_bytes", cfg.maxResponseBytes,
 			"version", version)

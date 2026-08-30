@@ -79,11 +79,14 @@ That is the complete surface. **No fourth tool.**
   our innovation budget belongs to MCP, not JSON parsing.
 - **Guardrails** - enforced server-side, not trusted to the model:
   - range queries capped at a max lookback window (config, default 24h)
-  - step auto-computed so points per series ≤ 200; max 50 series returned
-    (truncate + set `truncated: true` + hint to aggregate)
+  - step auto-computed so points per series ≤ the budget (config, default
+    200; fencepost-exact - Prometheus returns floor(window/step)+1 samples);
+    max series per result (config, default 50; truncate + `truncated: true`
+    \+ hint to aggregate); future range ends clamped to now and reported
   - per-request timeout budget (config, default 10s) via `context.WithTimeout`;
     Prometheus's own `timeout` query param set to 90% of it so upstream quits first
-  - upstream response body capped at 1 MiB via `io.LimitReader`
+  - upstream response body capped (config, default 1 MiB) at the HTTP
+    transport, reported with the configured size and the fix
 - **Self-observability** - `/healthz` endpoint and `/metrics` (Prometheus format) on the
   promscope server itself: request counts, latencies, upstream errors.
 
@@ -107,6 +110,12 @@ In the go-sdk, `StreamableHTTPHandler{Stateless: true}` means:
 
 **Rule:** nothing in the codebase may hold per-client state. If a feature needs it, the
 feature is out of scope.
+
+**Corollary - config homogeneity:** "any replica serves any request" additionally
+assumes every replica runs *identical configuration*. Guardrail limits differing
+across replicas make the same request behave differently behind round-robin, which
+presents as flakiness. The M4 compose stack therefore uses a single shared env
+block for all promscope replicas.
 
 ## 6. Non-goals (accepted limitations - written down to prevent scope creep)
 

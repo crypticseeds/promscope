@@ -2,4 +2,5 @@
 .idea
 docs
 deploy
+loadtest
 README.md

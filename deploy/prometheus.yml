@@ -26,8 +26,10 @@ scrape_configs:
   #   metrics_path: /metrics
   #   static_configs:
   #     - targets: ["<POD_ID>-8000.proxy.runpod.net"]
-  #   # If vLLM runs with --api-key and /metrics sits behind it, render the
-  #   # credential from Doppler into a gitignored file - never commit it:
+  #   # If vLLM runs with --api-key and /metrics sits behind it: render the
+  #   # token from Doppler into deploy/secrets/runpod-token (that exact path
+  #   # is gitignored and dockerignored), uncomment the bind mount in
+  #   # compose.yaml, then:
   #   # authorization:
   #   #   type: Bearer
   #   #   credentials_file: /etc/prometheus/runpod-token

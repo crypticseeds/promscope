@@ -24,12 +24,17 @@ x-promscope: &promscope
 
 services:
   prometheus:
-    image: prom/prometheus:v3.5.0
+    image: prom/prometheus:v3.5.0@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
     ports:
-      - "9090:9090"
+      # Loopback only (security review M1): this stack is a demo with no
+      # auth anywhere - it must never listen on the LAN.
+      - "127.0.0.1:9090:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./rules.yml:/etc/prometheus/rules.yml:ro
+      # RunPod recipe: render the token to deploy/secrets/runpod-token
+      # (gitignored) and uncomment - see prometheus.yml.
+      # - ./secrets/runpod-token:/etc/prometheus/runpod-token:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/ready"]
       interval: 5s
@@ -37,7 +42,7 @@ services:
       retries: 5
 
   node-exporter:
-    image: prom/node-exporter:v1.9.1
+    image: prom/node-exporter:v1.9.1@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
 
   mock-vllm:
     build:
@@ -49,11 +54,10 @@ services:
   promscope-b: *promscope
 
   nginx:
-    image: nginx:1.27-alpine
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     ports:
-      # The stack answers on the same port a locally-run promscope would,
-      # so docs/m2-tools.http and MCP Inspector work unchanged.
-      - "8090:8090"
+      # Same port a locally-run promscope would use, loopback only.
+      - "127.0.0.1:8090:8090"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:

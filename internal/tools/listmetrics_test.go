@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/crypticseeds/promscope/internal/promclient"
 )
@@ -18,6 +19,10 @@ type fakeClient struct {
 	metaErr   error
 	alerts    []promclient.Alert
 	alertsErr error
+
+	querySeries []promclient.Series
+	queryWarns  []string
+	queryErr    error
 }
 
 func (f *fakeClient) MetricNames(context.Context) ([]string, error) {
@@ -30,6 +35,14 @@ func (f *fakeClient) Metadata(context.Context) (map[string]promclient.Meta, erro
 
 func (f *fakeClient) Alerts(context.Context) ([]promclient.Alert, error) {
 	return f.alerts, f.alertsErr
+}
+
+func (f *fakeClient) Query(context.Context, string, time.Time, time.Duration) ([]promclient.Series, []string, error) {
+	return f.querySeries, f.queryWarns, f.queryErr
+}
+
+func (f *fakeClient) QueryRange(context.Context, string, time.Time, time.Time, time.Duration, time.Duration) ([]promclient.Series, []string, error) {
+	return f.querySeries, f.queryWarns, f.queryErr
 }
 
 func TestListMetrics(t *testing.T) {

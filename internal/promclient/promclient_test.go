@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -142,6 +143,96 @@ func TestAlerts(t *testing.T) {
 	}
 	if got[1].Labels["severity"] != "warn" {
 		t.Errorf("labels not converted: %+v", got[1].Labels)
+	}
+}
+
+func TestQueryInstantVector(t *testing.T) {
+	var gotTimeout string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/query" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		r.ParseForm()
+		gotTimeout = r.Form.Get("timeout")
+		w.Header().Set("Content-Type", "application/json")
+		// Two series, deliberately out of label order to prove sorting.
+		w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[
+			{"metric":{"__name__":"up","job":"z-last"},"value":[1724800000.123,"1"]},
+			{"metric":{"__name__":"up","job":"a-first"},"value":[1724800000.123,"0"]}
+		]}}`))
+	})
+
+	series, warns, err := c.Query(context.Background(), "up", time.Now(), 9*time.Second)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(warns) != 0 {
+		t.Errorf("unexpected warnings: %v", warns)
+	}
+	if gotTimeout != "9s" && gotTimeout != "9" {
+		t.Errorf("timeout param = %q, want 9s - the upstream budget must be on the wire", gotTimeout)
+	}
+	if len(series) != 2 {
+		t.Fatalf("got %d series, want 2", len(series))
+	}
+	if series[0].Labels["job"] != "a-first" {
+		t.Errorf("series not sorted by labels: first is %v", series[0].Labels)
+	}
+	if len(series[0].Points) != 1 || series[0].Points[0].V != 0 {
+		t.Errorf("instant query should yield one point per series, got %+v", series[0].Points)
+	}
+}
+
+func TestQueryRangeMatrix(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/query_range" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		r.ParseForm()
+		for _, p := range []string{"start", "end", "step"} {
+			if r.Form.Get(p) == "" {
+				t.Errorf("range param %q missing from request", p)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[
+			{"metric":{"__name__":"go_goroutines"},"values":[[1724800000,"33"],[1724800030,"35"],[1724800060,"34"]]}
+		]}}`))
+	})
+
+	series, _, err := c.QueryRange(context.Background(),
+		"go_goroutines", time.Now().Add(-time.Hour), time.Now(), 30*time.Second, 9*time.Second)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(series) != 1 || len(series[0].Points) != 3 {
+		t.Fatalf("want 1 series with 3 points, got %+v", series)
+	}
+	if series[0].Points[1].V != 35 {
+		t.Errorf("point conversion wrong: %+v", series[0].Points)
+	}
+	if series[0].Points[0].T.After(series[0].Points[2].T) {
+		t.Error("points out of chronological order")
+	}
+}
+
+func TestQueryResponseCap(t *testing.T) {
+	// Serve a body just over the 1 MiB cap: a valid JSON prefix followed by
+	// filler, so the failure is the cap - not the JSON syntax.
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[`))
+		filler := strings.Repeat(" ", 1<<20)
+		w.Write([]byte(filler))
+		w.Write([]byte(`]}}`))
+	})
+
+	_, _, err := c.Query(context.Background(), "up", time.Now(), 9*time.Second)
+	if err == nil {
+		t.Fatal("want error when response exceeds cap, got nil")
+	}
+	if !strings.Contains(err.Error(), "1 MiB") || !strings.Contains(err.Error(), "aggregate") {
+		t.Errorf("error should name the cap and the fix, got: %v", err)
 	}
 }
 

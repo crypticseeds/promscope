@@ -7,8 +7,12 @@ package promclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/api"
@@ -34,6 +38,21 @@ type Alert struct {
 	Value       string // the alert expression's value when last evaluated
 }
 
+// Point is one sample: a timestamp and a value. V may be NaN or ±Inf -
+// PromQL produces those (e.g. 0/0) - and callers that serialize to JSON
+// must handle them, because encoding/json cannot.
+type Point struct {
+	T time.Time
+	V float64
+}
+
+// Series is one time series in a query result: a label set and its samples.
+// An instant query yields exactly one point per series.
+type Series struct {
+	Labels map[string]string
+	Points []Point
+}
+
 // Client is the slice of Prometheus that promscope's tools consume.
 // It grows only when a tool needs a new operation (SPEC section 6).
 type Client interface {
@@ -48,6 +67,16 @@ type Client interface {
 	// Alerts returns all active (firing or pending) alerts, sorted firing
 	// first, then by name.
 	Alerts(ctx context.Context) ([]Alert, error)
+
+	// Query evaluates a PromQL expression at time ts. The timeout is
+	// passed to Prometheus as its own evaluation deadline; keep it below
+	// the ctx deadline so the upstream gives up first and returns a clean
+	// error. Warnings are advisory notes from Prometheus, not failures.
+	Query(ctx context.Context, promql string, ts time.Time, timeout time.Duration) (result []Series, warnings []string, err error)
+
+	// QueryRange evaluates a PromQL expression over [start, end] at the
+	// given step. Same timeout semantics as Query.
+	QueryRange(ctx context.Context, promql string, start, end time.Time, step time.Duration, timeout time.Duration) (result []Series, warnings []string, err error)
 }
 
 // HTTP is the real Client, backed by the official client_golang v1 API.
@@ -59,9 +88,61 @@ type HTTP struct {
 // the build breaks here instead of at a distant call site.
 var _ Client = (*HTTP)(nil)
 
+// maxResponseBytes caps any Prometheus response body (SPEC section 4). A
+// pathological query can return tens of MB; the cap turns that into a clean
+// error instead of an OOM or a context-window bomb downstream.
+const maxResponseBytes = 1 << 20 // 1 MiB
+
+// errBodyTooLarge is detected by substring (see tooLarge) because
+// client_golang does not always preserve wrapped errors across its reads.
+var errBodyTooLarge = errors.New("promclient: response exceeded 1 MiB cap")
+
+// limitRoundTripper enforces maxResponseBytes on every response body by
+// wrapping it in a reader that fails once the cap is crossed.
+type limitRoundTripper struct {
+	next http.RoundTripper
+}
+
+func (l limitRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := l.next.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = &cappedBody{rc: resp.Body, remaining: maxResponseBytes}
+	return resp, nil
+}
+
+type cappedBody struct {
+	rc        io.ReadCloser
+	remaining int64
+}
+
+func (c *cappedBody) Read(p []byte) (int, error) {
+	if c.remaining <= 0 {
+		return 0, errBodyTooLarge
+	}
+	if int64(len(p)) > c.remaining {
+		p = p[:c.remaining]
+	}
+	n, err := c.rc.Read(p)
+	c.remaining -= int64(n)
+	return n, err
+}
+
+func (c *cappedBody) Close() error { return c.rc.Close() }
+
+// tooLarge reports whether err is (or wraps, however lossily) the body cap.
+func tooLarge(err error) bool {
+	return err != nil &&
+		(errors.Is(err, errBodyTooLarge) || strings.Contains(err.Error(), errBodyTooLarge.Error()))
+}
+
 // New returns an HTTP client for the Prometheus server at baseURL.
 func New(baseURL string) (*HTTP, error) {
-	c, err := api.NewClient(api.Config{Address: baseURL})
+	c, err := api.NewClient(api.Config{
+		Address:      baseURL,
+		RoundTripper: limitRoundTripper{next: api.DefaultRoundTripper},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("promclient: %w", err)
 	}
@@ -135,4 +216,98 @@ func labelSetToMap(ls model.LabelSet) map[string]string {
 		m[string(k)] = string(v)
 	}
 	return m
+}
+
+func (h *HTTP) Query(ctx context.Context, promql string, ts time.Time, timeout time.Duration) ([]Series, []string, error) {
+	val, warns, err := h.api.Query(ctx, promql, ts, promv1.WithTimeout(timeout))
+	if err != nil {
+		return nil, nil, queryErr("query", err)
+	}
+	series, err := toSeries(val)
+	if err != nil {
+		return nil, nil, err
+	}
+	return series, warns, nil
+}
+
+func (h *HTTP) QueryRange(ctx context.Context, promql string, start, end time.Time, step time.Duration, timeout time.Duration) ([]Series, []string, error) {
+	r := promv1.Range{Start: start, End: end, Step: step}
+	val, warns, err := h.api.QueryRange(ctx, promql, r, promv1.WithTimeout(timeout))
+	if err != nil {
+		return nil, nil, queryErr("range query", err)
+	}
+	series, err := toSeries(val)
+	if err != nil {
+		return nil, nil, err
+	}
+	return series, warns, nil
+}
+
+// queryErr maps upstream failures to actionable messages, special-casing the
+// response cap: the fix for "too large" is a narrower query, and only this
+// layer knows that is what happened.
+func queryErr(op string, err error) error {
+	if tooLarge(err) {
+		return fmt.Errorf("promclient: %s: %w - aggregate (e.g. avg by(...)) or narrow the selector", op, errBodyTooLarge)
+	}
+	return fmt.Errorf("promclient: %s: %w", op, err)
+}
+
+// toSeries converts the three PromQL result shapes into one: a list of
+// labeled series. Vector = one point per series (instant), Matrix = many
+// points (range), Scalar = one unlabeled series. Sorted by label string so
+// output is deterministic across calls - tests stay simple and agent prompt
+// caches stay warm.
+func toSeries(v model.Value) ([]Series, error) {
+	var out []Series
+	switch val := v.(type) {
+	case model.Vector:
+		out = make([]Series, 0, len(val))
+		for _, s := range val {
+			out = append(out, Series{
+				Labels: labelSetToMap(model.LabelSet(s.Metric)),
+				Points: []Point{{T: s.Timestamp.Time(), V: float64(s.Value)}},
+			})
+		}
+	case model.Matrix:
+		out = make([]Series, 0, len(val))
+		for _, ss := range val {
+			pts := make([]Point, len(ss.Values))
+			for i, p := range ss.Values {
+				pts[i] = Point{T: p.Timestamp.Time(), V: float64(p.Value)}
+			}
+			out = append(out, Series{
+				Labels: labelSetToMap(model.LabelSet(ss.Metric)),
+				Points: pts,
+			})
+		}
+	case *model.Scalar:
+		out = []Series{{
+			Labels: map[string]string{},
+			Points: []Point{{T: val.Timestamp.Time(), V: float64(val.Value)}},
+		}}
+	default:
+		return nil, fmt.Errorf("promclient: unsupported result type %q", v.Type())
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return labelsKey(out[i].Labels) < labelsKey(out[j].Labels)
+	})
+	return out, nil
+}
+
+// labelsKey is a cheap deterministic ordering key for a label set.
+func labelsKey(labels map[string]string) string {
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(labels[k])
+		b.WriteByte(',')
+	}
+	return b.String()
 }

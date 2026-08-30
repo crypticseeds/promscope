@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/crypticseeds/promscope/internal/promclient"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -132,6 +133,65 @@ func TestIntegrationToolErrorConversion(t *testing.T) {
 	text, ok := res.Content[0].(*mcp.TextContent)
 	if !ok || !strings.Contains(text.Text, "PROMSCOPE_PROMETHEUS_URL") {
 		t.Errorf("agent-facing error must name the fix, got %+v", res.Content[0])
+	}
+}
+
+func TestIntegrationRulesResource(t *testing.T) {
+	session := startSession(t, &fakeClient{
+		ruleGroups: []promclient.RuleGroup{{
+			Name: "demo",
+			Rules: []promclient.Rule{{
+				Kind: "alerting", Name: "AlwaysFiring", Query: "vector(1)",
+				For: 5 * time.Minute, Labels: map[string]string{"severity": "info"},
+			}},
+		}},
+	})
+	ctx := context.Background()
+
+	list, err := session.ListResources(ctx, nil)
+	if err != nil {
+		t.Fatalf("resources/list: %v", err)
+	}
+	if len(list.Resources) != 1 || list.Resources[0].URI != "prometheus://rules" {
+		t.Fatalf("want exactly prometheus://rules in the catalog, got %+v", list.Resources)
+	}
+
+	res, err := session.ReadResource(ctx, &mcp.ReadResourceParams{URI: "prometheus://rules"})
+	if err != nil {
+		t.Fatalf("resources/read: %v", err)
+	}
+	if res.Contents[0].MIMEType != "application/json" {
+		t.Errorf("MIMEType = %q, want application/json", res.Contents[0].MIMEType)
+	}
+
+	var doc struct {
+		Groups []struct {
+			Name  string `json:"name"`
+			Rules []struct {
+				Kind string `json:"kind"`
+				Name string `json:"name"`
+				For  string `json:"for"`
+			} `json:"rules"`
+		} `json:"groups"`
+	}
+	if err := json.Unmarshal([]byte(res.Contents[0].Text), &doc); err != nil {
+		t.Fatalf("resource body is not the documented JSON shape: %v", err)
+	}
+	r := doc.Groups[0].Rules[0]
+	if r.Kind != "alerting" || r.Name != "AlwaysFiring" || r.For != "5m0s" {
+		t.Errorf("unexpected rule in document: %+v", r)
+	}
+}
+
+func TestIntegrationRulesResourceUpstreamError(t *testing.T) {
+	session := startSession(t, &fakeClient{rulesErr: fmt.Errorf("connection refused")})
+
+	_, err := session.ReadResource(context.Background(), &mcp.ReadResourceParams{URI: "prometheus://rules"})
+	if err == nil {
+		t.Fatal("want error when Prometheus is unreachable")
+	}
+	if !strings.Contains(err.Error(), "PROMSCOPE_PROMETHEUS_URL") {
+		t.Errorf("resource error must name the fix, got: %v", err)
 	}
 }
 

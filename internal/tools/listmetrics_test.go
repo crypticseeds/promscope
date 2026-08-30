@@ -20,6 +20,9 @@ type fakeClient struct {
 	alerts    []promclient.Alert
 	alertsErr error
 
+	ruleGroups []promclient.RuleGroup
+	rulesErr   error
+
 	querySeries []promclient.Series
 	queryWarns  []string
 	queryErr    error
@@ -42,6 +45,10 @@ func (f *fakeClient) Metadata(context.Context) (map[string]promclient.Meta, erro
 
 func (f *fakeClient) Alerts(context.Context) ([]promclient.Alert, error) {
 	return f.alerts, f.alertsErr
+}
+
+func (f *fakeClient) Rules(context.Context) ([]promclient.RuleGroup, error) {
+	return f.ruleGroups, f.rulesErr
 }
 
 func (f *fakeClient) Query(_ context.Context, q string, _ time.Time, timeout time.Duration) ([]promclient.Series, []string, error) {

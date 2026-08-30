@@ -53,6 +53,25 @@ type Series struct {
 	Points []Point
 }
 
+// Rule is one alerting or recording rule.
+type Rule struct {
+	Kind        string            // alerting | recording
+	Name        string
+	Query       string            // the PromQL expression the rule evaluates
+	For         time.Duration     // alerting only: how long the condition must hold
+	Labels      map[string]string
+	Annotations map[string]string // alerting only
+	Health      string            // ok | err | unknown
+	LastError   string
+}
+
+// RuleGroup is a named group of rules from one rules file.
+type RuleGroup struct {
+	Name  string
+	File  string
+	Rules []Rule
+}
+
 // Client is the slice of Prometheus that promscope's tools consume.
 // It grows only when a tool needs a new operation (SPEC section 6).
 type Client interface {
@@ -67,6 +86,9 @@ type Client interface {
 	// Alerts returns all active (firing or pending) alerts, sorted firing
 	// first, then by name.
 	Alerts(ctx context.Context) ([]Alert, error)
+
+	// Rules returns the configured alerting and recording rule groups.
+	Rules(ctx context.Context) ([]RuleGroup, error)
 
 	// Query evaluates a PromQL expression at time ts. The timeout is
 	// passed to Prometheus as its own evaluation deadline; keep it below
@@ -223,6 +245,46 @@ func labelSetToMap(ls model.LabelSet) map[string]string {
 		m[string(k)] = string(v)
 	}
 	return m
+}
+
+func (h *HTTP) Rules(ctx context.Context) ([]RuleGroup, error) {
+	res, err := h.api.Rules(ctx, nil) // nil matchers = all rule groups
+	if err != nil {
+		return nil, fmt.Errorf("promclient: rules: %w", err)
+	}
+	groups := make([]RuleGroup, len(res.Groups))
+	for i, g := range res.Groups {
+		rg := RuleGroup{Name: g.Name, File: g.File, Rules: make([]Rule, 0, len(g.Rules))}
+		// The upstream slice is heterogeneous: the v1 client decodes each
+		// entry into AlertingRule or RecordingRule based on its "type"
+		// field. The type switch is the entire cost of that design.
+		for _, r := range g.Rules {
+			switch rule := r.(type) {
+			case promv1.AlertingRule:
+				rg.Rules = append(rg.Rules, Rule{
+					Kind:        "alerting",
+					Name:        rule.Name,
+					Query:       rule.Query,
+					For:         time.Duration(rule.Duration * float64(time.Second)),
+					Labels:      labelSetToMap(rule.Labels),
+					Annotations: labelSetToMap(rule.Annotations),
+					Health:      string(rule.Health),
+					LastError:   rule.LastError,
+				})
+			case promv1.RecordingRule:
+				rg.Rules = append(rg.Rules, Rule{
+					Kind:      "recording",
+					Name:      rule.Name,
+					Query:     rule.Query,
+					Labels:    labelSetToMap(rule.Labels),
+					Health:    string(rule.Health),
+					LastError: rule.LastError,
+				})
+			}
+		}
+		groups[i] = rg
+	}
+	return groups, nil
 }
 
 func (h *HTTP) Query(ctx context.Context, promql string, ts time.Time, timeout time.Duration) ([]Series, []string, error) {

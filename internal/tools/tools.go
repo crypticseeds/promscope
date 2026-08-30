@@ -91,4 +91,12 @@ func Register(server *mcp.Server, prom promclient.Client, limits Limits) {
 			IdempotentHint: true,
 		},
 	}, ts.queryMetrics)
+
+	server.AddResource(&mcp.Resource{
+		URI:         rulesURI,
+		Name:        "rules",
+		Title:       "Prometheus alerting and recording rules",
+		Description: "The configured rule groups as JSON. Read this to see what get_alerts can fire and which recording rules exist.",
+		MIMEType:    "application/json",
+	}, ts.readRules)
 }

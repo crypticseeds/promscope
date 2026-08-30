@@ -247,6 +247,46 @@ func TestNewRejectsNonPositiveCap(t *testing.T) {
 	}
 }
 
+func TestRules(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/rules" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// One group holding both rule kinds - the heterogeneous decode is
+		// exactly what this test pins down.
+		w.Write([]byte(`{"status":"success","data":{"groups":[{
+			"name":"demo","file":"/etc/prometheus/rules.yml","interval":15,
+			"rules":[
+				{"type":"alerting","name":"AlwaysFiring","query":"vector(1)","duration":300,
+				 "labels":{"severity":"info"},"annotations":{"summary":"demo alert"},
+				 "alerts":[],"health":"ok","state":"firing",
+				 "evaluationTime":0.001,"lastEvaluation":"2026-08-30T17:00:00Z"},
+				{"type":"recording","name":"job:up:sum","query":"sum by(job) (up)",
+				 "labels":{},"health":"ok",
+				 "evaluationTime":0.001,"lastEvaluation":"2026-08-30T17:00:00Z"}
+			]}]}}`))
+	})
+
+	groups, err := c.Rules(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(groups) != 1 || len(groups[0].Rules) != 2 {
+		t.Fatalf("want 1 group with 2 rules, got %+v", groups)
+	}
+	alerting, recording := groups[0].Rules[0], groups[0].Rules[1]
+	if alerting.Kind != "alerting" || alerting.Name != "AlwaysFiring" || alerting.For != 5*time.Minute {
+		t.Errorf("alerting rule wrong: %+v", alerting)
+	}
+	if alerting.Annotations["summary"] != "demo alert" {
+		t.Errorf("annotations not converted: %+v", alerting.Annotations)
+	}
+	if recording.Kind != "recording" || recording.Name != "job:up:sum" || recording.For != 0 {
+		t.Errorf("recording rule wrong: %+v", recording)
+	}
+}
+
 func TestContextCancellationPropagates(t *testing.T) {
 	// The handler stalls longer than the caller's budget. If context
 	// propagation works, the client gives up at ~50ms with an error;

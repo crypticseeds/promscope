@@ -94,3 +94,18 @@ Content-Type: application/json
 Accept: application/json, text/event-stream
 
 {"jsonrpc": "2.0", "id": 23, "method": "tools/call", "params": {"name": "query_metrics", "arguments": {"query": "up", "mode": "range", "start": "-25h"}}}
+
+### 13. resources/list - the one resource, prometheus://rules
+POST http://localhost:8090/mcp
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{"jsonrpc": "2.0", "id": 40, "method": "resources/list"}
+
+### 14. resources/read - vanilla Prometheus has no rules, so expect empty
+### groups plus the explanatory note (the M4 stack ships an always-firing rule)
+POST http://localhost:8090/mcp
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{"jsonrpc": "2.0", "id": 41, "method": "resources/read", "params": {"uri": "prometheus://rules"}}

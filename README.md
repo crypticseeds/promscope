@@ -117,9 +117,10 @@ with *no remedy*, and it grows with scale: behind N-replica round-robin,
 
 Stateless deletes the bill instead of financing it: no LB affinity, no
 session store, no drain choreography on deploys, no per-session memory
-liability (H3: ~8 KiB for every client that never says goodbye), and
-autoscaling that is boring by construction. The trade - documented above -
-is losing the server-push features this read-only surface never needed.
+liability (measured: ~8 KiB retained for every client that never says
+goodbye), and autoscaling that is boring by construction. The trade -
+documented above - is losing the server-push features this read-only
+surface never needed.
 
 ## Quickstart
 

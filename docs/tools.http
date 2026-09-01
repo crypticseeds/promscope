@@ -1,4 +1,4 @@
-# M2 tool requests - needs a running Prometheus and promscope:
+# promscope tool requests - needs a running Prometheus and promscope:
 #   docker run -d --rm --name prom -p 9090:9090 prom/prometheus
 #   go run ./cmd/promscope
 #
@@ -50,9 +50,9 @@ Accept: application/json, text/event-stream
 
 {"jsonrpc": "2.0", "id": 15, "method": "tools/call", "params": {"name": "list_metrics", "arguments": {}}}
 
-### 7. get_alerts - vanilla Prometheus has no alert rules, so expect
-### total 0 with the "no alert rules configured" hint (the always-firing
-### demo rule arrives with the M4 compose stack)
+### 7. get_alerts - a vanilla `docker run` Prometheus has no alert rules, so
+### expect total 0 with the "no alert rules configured" hint (the compose
+### demo stack DOES ship an always-firing rule, so expect AlwaysFiring there)
 POST http://localhost:8090/mcp
 Content-Type: application/json
 Accept: application/json, text/event-stream
@@ -103,8 +103,8 @@ Accept: application/json, text/event-stream
 
 {"jsonrpc": "2.0", "id": 40, "method": "resources/list"}
 
-### 14. resources/read - vanilla Prometheus has no rules, so expect empty
-### groups plus the explanatory note (the M4 stack ships an always-firing rule)
+### 14. resources/read - against a vanilla Prometheus expect empty groups
+### plus the explanatory note; against the compose stack expect both rule kinds
 POST http://localhost:8090/mcp
 Content-Type: application/json
 Accept: application/json, text/event-stream

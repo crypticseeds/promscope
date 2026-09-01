@@ -93,9 +93,9 @@ the migration path. In the Go SDK this is `StreamableHTTPHandler{Stateless: true
 
 - promscope as shipped (stateless): **0.00% failures** behind 2-replica
   round-robin, flat ~8 MiB memory under session churn
-- the rejected stateful alternative (kept behind a test flag for the A/B):
-  **49.33% request failures** in the identical setup, and ~800 MiB per
-  replica leaked in 120s of churn
+- the rejected stateful alternative (kept behind a test flag so its failure
+  mode could be measured): **49.33% request failures** in the identical
+  setup, and ~800 MiB per replica leaked in 120s of churn
 - adding a replica changed throughput by only +4.5% - promscope was never
   the bottleneck (the shared Prometheus is), which is the honest half of the
   scaling story: stateless makes scale-out *safe*; only your bottleneck
@@ -138,7 +138,7 @@ shows which replica answered.
 
 Try it with the [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
 (`npx @modelcontextprotocol/inspector@2.4.0`, transport Streamable HTTP) or
-replay the requests in [`docs/m2-tools.http`](docs/m2-tools.http). For local
+replay the requests in [`docs/tools.http`](docs/tools.http). For local
 development without Docker: `go run ./cmd/promscope` against any Prometheus.
 
 Operational endpoints on each replica: `/healthz` (liveness) and `/metrics`
@@ -198,7 +198,7 @@ across replicas.
 |---|---|---|
 | `PROMSCOPE_LISTEN_ADDR` | `:8090` | HTTP listen address |
 | `PROMSCOPE_PROMETHEUS_URL` | `http://localhost:9090` | Upstream Prometheus |
-| `PROMSCOPE_STATELESS` | `true` | Stateless transport (false exists solely for the load-test A/B) |
+| `PROMSCOPE_STATELESS` | `true` | Stateless transport; `false` exists solely to reproduce the stateful comparison in [`loadtest/`](loadtest/README.md) |
 | `PROMSCOPE_MAX_LOOKBACK` | `24h` | Widest range-query window (bounds the requested window; PromQL `offset`/`@` can still reach older data - compute isolation is Prometheus's job) |
 | `PROMSCOPE_MAX_SERIES` | `50` | Series per result before truncation |
 | `PROMSCOPE_MAX_POINTS` | `200` | Points-per-series budget (drives step auto-compute) |
@@ -213,5 +213,5 @@ across replicas.
 - **Read-only** - no write path exists.
 - Three tools, frozen. Robustness over surface area.
 
-See [docs/SPEC.md](docs/SPEC.md) for the full specification, architecture decisions, and
-milestone plan.
+See [docs/SPEC.md](docs/SPEC.md) for the full specification and the reasoning
+behind every design decision.

@@ -101,6 +101,26 @@ the migration path. In the Go SDK this is `StreamableHTTPHandler{Stateless: true
   scaling story: stateless makes scale-out *safe*; only your bottleneck
   makes it *useful*
 
+### Serving stateful in production - and what stateless deletes
+
+The 49% is not inherent to stateful MCP; it is the price of deploying it
+with *no remedy*, and it grows with scale: behind N-replica round-robin,
+~(N-1)/N of post-handshake requests miss the session's home replica
+(2 replicas -> 50%, 4 -> 75%). Production teams pay for one of these:
+
+| Remedy | How | Ongoing cost |
+|---|---|---|
+| Sticky routing | LB hashes the session: `hash $http_mcp_session_id consistent` | Deploys and scale-in kill each replica's sessions; hot backends |
+| External session store | Sessions in Redis - any replica loads any session | A new critical HA tier; go-sdk sessions are in-process today, so this means transport surgery |
+| Platform routing | One durable instance per session, runtime routes by ID (how Cloudflare hosts remote MCP) | Coupled to that runtime |
+| Client retry | Spec behavior: on 404 + session id, re-initialize | A backstop, not a strategy - latency spikes, lost context |
+
+Stateless deletes the bill instead of financing it: no LB affinity, no
+session store, no drain choreography on deploys, no per-session memory
+liability (H3: ~8 KiB for every client that never says goodbye), and
+autoscaling that is boring by construction. The trade - documented above -
+is losing the server-push features this read-only surface never needed.
+
 ## Quickstart
 
 ```bash
